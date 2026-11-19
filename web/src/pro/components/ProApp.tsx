@@ -68,6 +68,10 @@ export default function ProApp({ data }: { data: ProData }) {
         const saved = localStorage.getItem(STORE);
         if (saved) setPfText(saved);
       } catch {}
+      fromHash();
+    };
+    // #TICKER deep links, on load and when only the hash changes (same behaviour as v1).
+    const fromHash = () => {
       const t = decodeURIComponent(location.hash.slice(1)).toUpperCase();
       if (index.has(t)) setFocus((cur) => ({ s: { kind: "stock", i: index.get(t)! }, morph: cur.morph }));
     };
@@ -76,9 +80,11 @@ export default function ProApp({ data }: { data: ProData }) {
     };
     const id = setTimeout(restore, 0); // not rAF: it never fires in a background tab
     window.addEventListener("keydown", onKey);
+    window.addEventListener("hashchange", fromHash);
     return () => {
       clearTimeout(id);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("hashchange", fromHash);
     };
   }, [index]);
 
