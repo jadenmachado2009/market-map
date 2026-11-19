@@ -1,0 +1,4 @@
+.DS_Store
+.vercel
+# third-party description text; a local cache, not source
+desc_cache.json

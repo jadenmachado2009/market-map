@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* Light theme. Values from the reference data-viz palette (surfaces, ink, series-1 blue, blue ramp). */
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb;
+  --surface-2: #f3f2ef;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #75746f;
+  --line: #e2e1dc;
+  --point: #c9c8c3;
+  --accent: #2a78d6;
+  --seq-0: #0d366b;
+  --seq-1: #1c5cab;
+  --seq-2: #2a78d6;
+  --seq-3: #5598e7;
+  --seq-4: #86b6ef;
+}
+
+/* Dark theme: its own steps from the same ramps, not an automatic flip. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --surface-2: #232321;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-3: #9a998f;
+    --line: #34332f;
+    --point: #4f4e4a;
+    --accent: #3987e5;
+    --seq-0: #b7d3f6;
+    --seq-1: #86b6ef;
+    --seq-2: #5598e7;
+    --seq-3: #2a78d6;
+    --seq-4: #1c5cab;
+  }
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Map points glide between the two layouts. */
+.pt {
+  transition:
+    transform 900ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms ease;
+}
+.pt circle {
+  transition: fill 200ms ease;
+}
+/* Neighbour lines fade in; right after a view toggle they wait for the points to land. */
+.links {
+  animation: fade-in 180ms ease both;
+}
+.links.late {
+  animation-delay: 800ms;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.halo {
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pt, .pt circle { transition: none; }
+  .links { animation: none; }
+}
