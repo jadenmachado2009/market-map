@@ -1,0 +1,64 @@
+name: Market Map Pro nightly rebuild
+
+# Rebuilds the /pro data after the US close and deploys it to Vercel.
+# Scheduled workflows run from the default branch (main).
+on:
+  schedule:
+    - cron: "30 1 * * 2-6" # 01:30 UTC Tue–Sat = after each US trading day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pipeline dependencies (CPU-only torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements_v2.txt
+
+      - name: Restore caches (EDGAR Item 1 text, Yahoo summaries, embedding model)
+        uses: actions/cache@v4
+        with:
+          path: |
+            pro_cache/edgar
+            pro_cache/yahoo_desc.json
+            ~/.cache/huggingface
+          key: pro-cache-${{ github.run_id }}
+          restore-keys: pro-cache-
+
+      - name: Test the pipeline maths
+        run: python -m unittest discover tests_v2
+
+      - name: Build data
+        run: python pipeline_v2.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test the front-end maths
+        working-directory: web
+        run: node --test tests-pro/*.test.mjs
+
+      - name: Deploy to Vercel (production)
+        if: env.VERCEL_TOKEN != ''
+        run: |
+          npm install --global vercel@latest
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
