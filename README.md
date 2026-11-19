@@ -1,5 +1,7 @@
 # Market Map
 
+**Live:** https://market-map-zeta.vercel.app
+
 The S&P 500 laid out two ways: by **how each stock trades** (residual-return correlations with the market removed, UMAP) and by **what each company does** (embeddings of its business description, aligned to the first map with Procrustes). The interesting stocks are the ones that move when you switch.
 
 | Path | What it is |
