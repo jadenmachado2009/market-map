@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { Asset, PresetId } from "../lib/types";
 import { loadSeries, loadSimPct, type PairMatrix } from "../lib/lazy";
 import { rebase, rollingCorr } from "../lib/math";
-import { fmt } from "../lib/scales";
+import { fmt, pctLabel } from "../lib/scales";
 
 type Loaded = { pa: number[]; pb: number[]; roll: number[]; sim: number };
 
@@ -60,7 +60,7 @@ export function PairPanel({ a, b, assets, preset, presetLabel, dates, matrix, on
         <Stat label="Held ≥0.3, calendar years" value={held} />
         <Stat
           label="Business-text similarity"
-          value={!v ? "…" : Number.isFinite(v.sim) ? `${v.sim.toFixed(1)}th pct` : "n/a"}
+          value={!v ? "…" : Number.isFinite(v.sim) ? pctLabel(v.sim) : "n/a"}
           hint={v && Number.isFinite(v.sim) ? `More similar than ${v.sim.toFixed(1)}% of stock pairs` : "Only stocks have business text"}
         />
         <Stat label={`β ${A.t} to S&P 500`} value={fmt(A.beta)} />

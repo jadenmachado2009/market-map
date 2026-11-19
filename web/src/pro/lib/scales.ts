@@ -67,7 +67,9 @@ export const moneyM = (m: number | null) =>
   m === null ? "–" : m >= 1000 ? `$${(m / 1000).toFixed(1)}B` : `$${m.toFixed(0)}M`;
 
 /** "more similar than 99.6% of pairs" -> 99.6; shown as a percentile. */
-export const pctLabel = (p: number) => (Number.isFinite(p) ? `${p >= 99.95 ? "99.9" : p.toFixed(p >= 99 ? 1 : 0)}th pct` : "–");
+/** Percentile as a plain number (no "th": 99.3th / 1th / 2th all read wrong). */
+export const pctNum = (p: number) => (p >= 99.95 ? "99.9" : p.toFixed(p >= 99 ? 1 : 0));
+export const pctLabel = (p: number) => (Number.isFinite(p) ? `${pctNum(p)} pctl` : "–");
 
 export const capPairs = <T extends { a: string; b: string }>(pairs: T[], maxPerTicker = 2): T[] => {
   const seen = new Map<string, number>();

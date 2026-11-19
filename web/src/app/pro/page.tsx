@@ -55,7 +55,7 @@ export default function ProPage() {
             <p>
               Company descriptions ({data.textSource === "edgar" ? "Item 1 of the latest 10-K, from SEC EDGAR" : "Yahoo Finance business summaries"})
               are embedded with a small local model, after removing names, boilerplate and the average description.
-              It&apos;s shown as a percentile: 99th means more similar than 99% of stock pairs.
+              It&apos;s shown as a percentile (pctl): 99 pctl means more similar than 99% of stock pairs.
             </p>
           </div>
           <div className="space-y-2">

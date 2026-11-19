@@ -3,7 +3,7 @@
 // Tabs and table pattern copied from v1 components/Sidebar.tsx (PairLists); columns and the third tab are new.
 import { useState } from "react";
 import type { DecoupleRow, PairRow } from "../lib/types";
-import { capPairs, fmt } from "../lib/scales";
+import { capPairs, fmt, pctNum } from "../lib/scales";
 
 type Tab = "hidden" | "apart" | "decouple";
 const COPY: Record<Tab, { tab: string; blurb: string }> = {
@@ -58,7 +58,7 @@ export function ProLists({ hidden, apart, decouple, ok, active, onPick }: {
             <tr className="text-left text-xs text-ink-3">
               <th className="pb-1 font-normal">Pair</th>
               <th className="pb-1 text-right font-normal">Corr</th>
-              <th className="pb-1 text-right font-normal" title="Business-text similarity percentile among all stock pairs">Text sim</th>
+              <th className="pb-1 text-right font-normal" title="Business-text similarity percentile among all stock pairs">Text sim pctl</th>
               <th className="pb-1 text-right font-normal" title="Calendar years with correlation of 0.3 or more">Held</th>
             </tr>
           )}
@@ -78,7 +78,7 @@ export function ProLists({ hidden, apart, decouple, ok, active, onPick }: {
                   <PairCell p={p} on={isOn(p)} onPick={onPick} />
                   <td className="py-0.5 text-right text-ink-2">{fmt(p.corr)}</td>
                   <td className="py-0.5 text-right text-ink-2" title={`More similar than ${p.simPct}% of stock pairs`}>
-                    {p.simPct >= 99.95 ? "99.9" : p.simPct.toFixed(p.simPct >= 99 ? 1 : 0)}th
+                    {pctNum(p.simPct)}
                   </td>
                   <td className="py-0.5 text-right text-ink-3">{p.k}/{p.n}</td>
                 </tr>
