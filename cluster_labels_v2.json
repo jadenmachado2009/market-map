@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Rate-sensitive (utilities, REITs)",
+    "sectors": ["Utilities", "Real Estate"]
+  },
+  {
+    "label": "Alt managers",
+    "tickers": ["KKR", "BX", "APO", "ARES", "BLK", "TPG", "CG", "OWL"]
+  },
+  {
+    "label": "AI capex",
+    "tickers": ["NVDA", "AVGO", "AMD", "MU", "ANET", "VRT", "VST", "CEG", "GEV", "ETN", "PWR", "FIX", "EME", "SMCI", "DELL", "COHR", "LITE", "GLW", "TLN", "NRG", "HPE", "MRVL"]
+  }
+]
