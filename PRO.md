@@ -36,7 +36,7 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 | `pro_meta/v1_checksums*.sha256` | SHA-256 of every v1 file: at the branch point, and now (with the Try Pro link) |
 
 ## Nightly rebuild: setup still needed
-1. The workflow is active on `main`. To edit it, use GitHub's web editor: the token on J.'s machine lacks the `workflow` scope, so pushes that change `.github/workflows/` are rejected.
+1. The workflow is active on `main`. To edit it, use GitHub's web editor: the local git token used so far lacks the `workflow` scope, so pushes that change `.github/workflows/` are rejected.
 2. Add repository secrets: `SEC_USER_AGENT`, plus `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` for the deploy step. Without the Vercel secrets the job still builds and tests, but skips deploying.
 
 Data isn't committed nightly (≈7 MB of binaries a night would bloat git). Each run deploys fresh data straight to Vercel. A normal `git push` deploys whatever data was last committed.
