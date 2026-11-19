@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import raw from "@/data-pro/market_map_v2.json";
 import type { ProData } from "@/pro/lib/types";
 import ProApp from "@/pro/components/ProApp";
@@ -23,7 +24,12 @@ export default function ProPage() {
   return (
     <main className="pro-root mx-auto w-full max-w-[1480px] px-4 pb-16 pt-6 sm:px-6 lg:px-8">
       <header className="mb-4">
-        <p className="text-xs font-medium uppercase tracking-wider text-ink-3">Market Map Pro</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-ink-3">
+          Market Map Pro ·{" "}
+          <Link href="/" className="normal-case tracking-normal text-ink-2 hover:text-ink hover:underline">
+            ← Classic map
+          </Link>
+        </p>
         <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-ink">See what your portfolio is really betting on.</h1>
         <p className="mt-1 text-xs tabular-nums text-ink-3">
           Updated nightly · as of {day(data.asof)} · {stocks} S&amp;P 500 stocks + {data.assets.length - stocks} ETFs, currencies,

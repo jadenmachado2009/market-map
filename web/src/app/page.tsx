@@ -20,7 +20,10 @@ export default function Home() {
           stocks are the ones that move when you switch.
         </p>
         <p className="mt-1 text-xs tabular-nums text-ink-3">
-          {data.stocks.length} stocks · daily prices {day(data.start)} – {day(data.asof)} · market (SPY) removed
+          {data.stocks.length} stocks · daily prices {day(data.start)} – {day(data.asof)} · market (SPY) removed ·{" "}
+          <a href="/pro" className="font-medium text-accent hover:underline">
+            Try Pro →
+          </a>
         </p>
       </header>
 

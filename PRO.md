@@ -33,7 +33,7 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 | `web/src/data-pro/market_map_v2.json` | the page's data (~100 KB gzipped) |
 | `web/public/pro-data/` | lazy binaries: per-preset pair matrices (int16 corr ×2, uint8 years held / available), total-return matrix, similarity percentiles, Float32 price and residual series |
 | `web/tests-pro/` | front-end tests (Node's built-in runner, so `package.json` stays untouched) |
-| `pro_meta/v1_checksums.sha256` | SHA-256 of every v1 file at the branch point |
+| `pro_meta/v1_checksums*.sha256` | SHA-256 of every v1 file: at the branch point, and now (with the Try Pro link) |
 
 ## Nightly rebuild: setup still needed
 1. Merge `v2-pro` into `main`. GitHub only runs scheduled workflows from the default branch.
@@ -49,6 +49,7 @@ Data isn't committed nightly (≈7 MB of binaries a night would bloat git). Each
 - **Factor ETFs drop out of presets that use them** (TLT under "+ Rates"; TLT and IWM under the full preset): their residual is zero by construction.
 
 ## v1 protection
-- Every v1 file is unchanged: check with `shasum -a 256 -c pro_meta/v1_checksums.sha256`.
+- Every v1 file is unchanged except `web/src/app/page.tsx`, which gained the approved "Try Pro →" link (5 lines). `pro_meta/v1_checksums_branchpoint.sha256` records v1 before any v2 work (23 of 24 still match); `pro_meta/v1_checksums.sha256` is the expected state with the link (`shasum -a 256 -c pro_meta/v1_checksums.sha256`).
+- The link is a plain `<a>` rather than `next/link`, so v1 gains no client component. Its rendered markup differs from the branch point by exactly that one element.
 - v1's rendered HTML is identical, apart from the stylesheet hash and build ID.
 - Tailwind v4 scans the whole project for class names, so the single shared stylesheet now also contains the utilities `/pro` uses: 44 added rules, plus new variables in the `:root` theme block. No v1 rule or variable value changed. Keeping them out would mean editing v1's `globals.css`.
