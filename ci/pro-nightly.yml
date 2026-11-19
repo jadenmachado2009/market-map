@@ -1,7 +1,7 @@
 name: Market Map Pro nightly rebuild
 
 # Rebuilds the /pro data after the US close and deploys it to Vercel.
-# Scheduled workflows only run from the default branch, so this activates once v2-pro is merged to main.
+# Lives in ci/ until it is copied to .github/workflows/ on the default branch (scheduled workflows only run there).
 on:
   schedule:
     - cron: "30 1 * * 2-6" # 01:30 UTC Tue–Sat = after each US trading day

@@ -27,7 +27,7 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 | `cluster_labels_v2.json` | manual cluster names, matched by member tickers / sectors / sub-industries |
 | `tests_v2/` | Python tests |
 | `requirements_v2.txt` | pipeline dependencies |
-| `.github/workflows/pro-nightly.yml` | nightly rebuild + Vercel deploy |
+| `ci/pro-nightly.yml` | nightly rebuild + Vercel deploy (move to `.github/workflows/` to activate) |
 | `web/src/app/pro/page.tsx` | the `/pro` route |
 | `web/src/pro/` | v2 components, maths, lazy loaders, styles (scoped under `.pro-root`) |
 | `web/src/data-pro/market_map_v2.json` | the page's data (~100 KB gzipped) |
@@ -36,7 +36,7 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 | `pro_meta/v1_checksums*.sha256` | SHA-256 of every v1 file: at the branch point, and now (with the Try Pro link) |
 
 ## Nightly rebuild: setup still needed
-1. Merge `v2-pro` into `main`. GitHub only runs scheduled workflows from the default branch.
+1. Put `ci/pro-nightly.yml` at `.github/workflows/pro-nightly.yml` on `main`. GitHub only runs scheduled workflows from the default branch. Pushing a workflow file needs a token with the `workflow` scope; the token used for this branch doesn't have it, so the file is parked in `ci/`. Adding it through GitHub's web editor or upload page works without that scope.
 2. Add repository secrets: `SEC_USER_AGENT`, plus `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` for the deploy step. Without the Vercel secrets the job still builds and tests, but skips deploying.
 
 Data isn't committed nightly (≈7 MB of binaries a night would bloat git). Each run deploys fresh data straight to Vercel. A normal `git push` deploys whatever data was last committed.
