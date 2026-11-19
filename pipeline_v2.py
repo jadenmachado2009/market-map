@@ -215,6 +215,30 @@ def download_prices(tickers: list[str], cached: bool):
     parts = [chunk(tickers[i:i + 100]) for i in range(0, len(tickers), 100)]
     px = pd.concat([p["Close"] for p in parts], axis=1, sort=True)
     vol = pd.concat([p["Volume"] for p in parts], axis=1, sort=True)
+
+    # yfinance's threaded download can fail single tickers (e.g. "database is locked" on its
+    # SQLite cache in CI). Retry anything that came back empty, serially, so no stock silently drops.
+    def empty():
+        return [t for t in tickers if t not in px.columns or px[t].isna().all()]
+    for attempt in range(3):
+        miss = empty()
+        if not miss:
+            break
+        log(f"  re-downloading {len(miss)} empty tickers (attempt {attempt + 1}): {miss[:12]}")
+        time.sleep(5 * (attempt + 1))
+        try:
+            df = yf.download(miss, start=START, auto_adjust=True, progress=False, threads=False)
+        except Exception as e:  # noqa: BLE001
+            log(f"  retry failed: {type(e).__name__}")
+            continue
+        if df.empty:
+            continue
+        for t in miss:
+            if t in df["Close"].columns and df["Close"][t].notna().any():
+                px[t] = df["Close"][t].reindex(px.index)
+                vol[t] = df["Volume"][t].reindex(vol.index)
+    if empty():
+        log(f"  still empty after retries: {empty()}")
     data = {"close": px, "volume": vol}
     CACHE.mkdir(exist_ok=True)
     pd.to_pickle(data, path)
