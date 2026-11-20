@@ -234,6 +234,23 @@
     ]
   },
   {
+    "label": "AI power & grid",
+    "tickers": [
+      "GEV",
+      "VST",
+      "CEG",
+      "NRG",
+      "TLN",
+      "VRT",
+      "PWR",
+      "ETN",
+      "HUBB",
+      "EME",
+      "FIX",
+      "GNRC"
+    ]
+  },
+  {
     "label": "AI hardware & chips",
     "subs": [
       "Semiconductors",

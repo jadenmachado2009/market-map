@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Market Map Pro (v2.1) data pipeline.
+"""Market Map Pro (v2.2) data pipeline.
 
 Builds everything the /pro route needs: three factor presets (market; + rates & defensives;
 + size & value), winsorised residual correlations, yearly stability counts, stable pair lists
-with theme tags, a Fisher-z / Benjamini-Hochberg decoupling list, business-text similarity
+with theme tags, a Fisher-z / Benjamini-Hochberg decoupling list plus a watchlist of the pairs
+closest to breaking, business-text similarity
 (SEC 10-K Item 1 when SEC_USER_AGENT is set, Yahoo summaries otherwise), a cross-asset universe,
-HDBSCAN clusters, covariance inputs for the portfolio X-ray and hedge finder, and compact
+HDBSCAN clusters (noise points assigned to their neighbours' majority cluster), covariance inputs for the portfolio X-ray and hedge finder, and compact
 lazy-loaded binaries.
 
 Usage:
@@ -57,6 +58,8 @@ DECOUPLE_MIN_LR = 0.5   # decoupling: only pairs with a long-run residual corr o
 DECOUPLE_HELD = 7 / 11  # ... that held in at least 7 of 11 calendar years
 FDR_Q = 0.05
 CLUSTER_MERGE_EPS = 0.05  # merge same-sector clusters whose nearest members are this close
+NOISE_K = 5             # HDBSCAN noise points join the majority cluster of their 5 nearest clustered neighbours
+N_WATCH = 25            # decoupling watchlist exported per preset (the page shows the top 5 within filters)
 
 # Factor instruments per preset, and the regression basis that spans exactly the same space
 # but gives readable betas (spreads instead of collinear ETFs).
@@ -78,7 +81,8 @@ EXPOSURE_NAMES = {
 PRESET_LABEL = {"mkt": "Market", "rates_def": "+ Rates & defensives", "full": "+ Rates, defensives, size, value"}
 
 CROSS = {
-    "etf": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "QQQ", "IWM", "EFA", "EEM"],
+    "etf": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "SPY", "QQQ", "IWM", "EFA", "EEM",
+            "USMV", "IWD", "IWF"],   # SPY/USMV/IWD/IWF are factors too: listed so they can be hedges (never plotted as their own factor)
     "fx": ["UUP", "FXE", "FXY", "FXB", "FXA"],
     "commodity": ["GLD", "SLV", "USO"],
     "bond": ["TLT", "IEF", "HYG"],
@@ -90,7 +94,8 @@ CROSS_NAMES = {
     "XLK": "Technology Select Sector SPDR", "XLP": "Consumer Staples Select Sector SPDR",
     "XLRE": "Real Estate Select Sector SPDR", "XLU": "Utilities Select Sector SPDR",
     "XLV": "Health Care Select Sector SPDR", "XLY": "Consumer Discretionary Select Sector SPDR",
-    "QQQ": "Invesco QQQ (Nasdaq-100)", "IWM": "iShares Russell 2000", "EFA": "iShares MSCI EAFE",
+    "SPY": "SPDR S&P 500", "USMV": "iShares MSCI USA Min Vol Factor", "IWD": "iShares Russell 1000 Value",
+    "IWF": "iShares Russell 1000 Growth", "QQQ": "Invesco QQQ (Nasdaq-100)", "IWM": "iShares Russell 2000", "EFA": "iShares MSCI EAFE",
     "EEM": "iShares MSCI Emerging Markets", "UUP": "US Dollar Index Bullish", "FXE": "Euro Trust",
     "FXY": "Japanese Yen Trust", "FXB": "British Pound Trust", "FXA": "Australian Dollar Trust",
     "GLD": "SPDR Gold", "SLV": "iShares Silver", "USO": "US Oil Fund", "TLT": "iShares 20+ Year Treasury",
@@ -564,12 +569,49 @@ def merge_adjacent(ids: np.ndarray, Y: np.ndarray, sectors: list[str], eps: floa
     return np.array([find(c) if c != -1 else -1 for c in ids]), merged
 
 
-def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, overrides: list[dict]):
+def assign_noise(ids: np.ndarray, Y: np.ndarray, k: int = NOISE_K) -> tuple[np.ndarray, np.ndarray]:
+    """Give every HDBSCAN noise point (-1) the majority cluster among its k nearest clustered neighbours
+    on the same layout; a tie goes to the tied cluster with the nearest member. Votes come only from
+    points HDBSCAN itself clustered, so assignments never chain. Returns (ids, assigned mask)."""
+    from scipy.spatial.distance import cdist
+
+    ids = np.asarray(ids).copy()
+    assigned = ids == -1
+    noise, lab = np.where(assigned)[0], np.where(~assigned)[0]
+    if len(noise) == 0:
+        return ids, assigned
+    if len(lab) == 0:                    # nothing clustered at all: one cluster
+        ids[:] = 0
+        return ids, assigned
+    D = cdist(Y[noise], Y[lab])
+    kk = min(k, len(lab))
+    new = ids.copy()
+    for r, i in enumerate(noise):
+        near = ids[lab[np.argsort(D[r], kind="stable")[:kk]]]
+        votes = Counter(near.tolist())
+        top = max(votes.values())
+        new[i] = next(c for c in near if votes[int(c)] == top)   # nearest among the tied leaders
+    return new, assigned
+
+
+def watchlist(z: np.ndarray, significant: np.ndarray, n: int = N_WATCH) -> np.ndarray:
+    """Positions in z of the pairs closest to breaking: most negative Fisher z first, excluding every pair
+    that already passed BH (shown in the significant list) and any whose recent correlation rose."""
+    z = np.asarray(z, float)
+    cand = np.where(~np.asarray(significant, bool) & (z < 0))[0]
+    return cand[np.argsort(z[cand], kind="stable")][:n]
+
+
+def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, overrides: list[dict],
+                   assigned: np.ndarray | None = None):
     """Manual overrides first (best member overlap), else the dominant sub-industry or sector.
-    Never a 'Mixed' label: two-sector clusters are named 'A & B'."""
+    Never a 'Mixed' label: two-sector clusters are named 'A & B'. Names and label positions come from
+    the members HDBSCAN placed itself, so a noise point joining a cluster can't flip its name."""
     out = []
+    core_mask = np.ones(len(ids), bool) if assigned is None else ~np.asarray(assigned, bool)
     for c in sorted(set(ids) - {-1}):
-        m = np.where(ids == c)[0]
+        m_all = np.where(ids == c)[0]
+        m = m_all[core_mask[m_all]] if core_mask[m_all].any() else m_all
         members = [tick[i] for i in m]
         subs = Counter(meta[t]["sub"] for t in members).most_common()
         secs = Counter(meta[t]["sector"] for t in members).most_common()
@@ -579,7 +621,7 @@ def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, 
             auto, cnt = secs[0]
         else:
             auto, cnt = f"{secs[0][0]} & {secs[1][0]}", secs[0][1] + secs[1][1]
-        out.append({"id": int(c), "label": auto, "auto": auto, "share": round(cnt / len(members), 2), "n": len(members),
+        out.append({"id": int(c), "label": auto, "auto": auto, "share": round(cnt / len(members), 2), "n": len(m_all),
                     "x": r3(np.median(Y[m, 0])), "y": r3(np.median(Y[m, 1])), "members": members})
     # each cluster takes the override that covers most of it (>= 50% of members); an override can
     # name several clusters, but within one layout the bigger cluster keeps the plain name
@@ -589,7 +631,7 @@ def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, 
         for ov in overrides:
             match = set(ov.get("tickers", []))
             match |= {t for t in mem if meta[t]["sector"] in ov.get("sectors", []) or meta[t]["sub"] in ov.get("subs", [])}
-            share = len(match & mem) / cl["n"]
+            share = len(match & mem) / len(mem)
             if share >= 0.5 and share > score:
                 best, score = ov, share
         if best:
@@ -681,7 +723,7 @@ def main():
     ua = os.environ.get("SEC_USER_AGENT", "").strip()
     mcap = {}
     try:
-        shares = shares_outstanding(ua or "MarketMapPro/2.1 (research script)")
+        shares = shares_outstanding(ua or "MarketMapPro/2.2 (research script)")
         last = close[assets].iloc[-1]
         for t in assets:
             cik = meta[t]["cik"]
@@ -816,13 +858,20 @@ def main():
     overrides = json.loads(LABELS_FILE.read_text()) if LABELS_FILE.exists() else []
     rules, theme_over = load_themes()
 
-    def clusters_for(Y):
+    def clusters_for(Y, name):
         has = np.where(~np.isnan(Y[:, 0]))[0]
         lab = np.full(N, -1)
         lab[has] = hdbscan_labels(Y[has])
         lab[has], merged = merge_adjacent(lab[has], Y[has], [sectors[i] for i in has])
-        return {"ids": [int(v) for v in lab], "labels": label_clusters(lab[has], Y[has], [assets[i] for i in has], meta, overrides)}, merged
-    biz_clusters, biz_merged = clusters_for(bz)
+        assigned = np.zeros(N, bool)
+        lab[has], assigned[has] = assign_noise(lab[has], Y[has])
+        assert (lab[has] != -1).all(), f"{name}: unclustered points left after noise assignment"
+        log(f"  clusters [{name}]: {len(set(lab[has]))} clusters; {int(assigned.sum())} HDBSCAN noise points assigned "
+            f"to their {NOISE_K} nearest neighbours' majority cluster")
+        return {"ids": [int(v) for v in lab],
+                "labels": label_clusters(lab[has], Y[has], [assets[i] for i in has], meta, overrides, assigned[has]),
+                "assigned": [bool(v) for v in assigned]}, merged
+    biz_clusters, biz_merged = clusters_for(bz, "business")
 
     # ---- pass 2: clusters, neighbours, lists, exports
     out_presets, report = {}, {}
@@ -832,7 +881,7 @@ def main():
     for p in FACTOR_COLS:
         d = st[p]
         inp, C, K, Nw, CL, C60, beh = d["inp"], d["C"], d["K"], d["Nw"], d["CL"], d["C60"], d["beh"]
-        beh_clusters, merged = clusters_for(beh)
+        beh_clusters, merged = clusters_for(beh, PRESET_LABEL[p])
         for m in merged + (biz_merged if p == "mkt" else []):
             log(f"  merged adjacent {m[0]} clusters {m[1]}+{m[2]} (gap {m[3]})")
 
@@ -883,6 +932,7 @@ def main():
         pval = norm.cdf(z)                       # lower tail: the recent correlation fell
         rej, adj = bh_reject(pval)
         passing = tested[rej][np.argsort(z[rej])]
+        watch = tested[watchlist(z, rej)]
         zq = {int(q): (float(zz), float(aa)) for q, zz, aa in zip(tested, z, adj)}
         log(f"  decoupling [{PRESET_LABEL[p]}]: {len(tested)} pairs tested, {int(rej.sum())} pass BH at q = {FDR_Q}")
 
@@ -900,6 +950,9 @@ def main():
             "decouple": [{"a": assets[si[q]], "b": assets[sj[q]], "longRun": r3(CL[si[q], sj[q]]),
                           "recent": r3(C60[si[q], sj[q]]), "k": int(kk[q]), "n": int(nn[q]),
                           "z": round(zq[int(q)][0], 2), "q": float(f"{zq[int(q)][1]:.2g}")} for q in passing[:N_LIST]],
+            "watch": [{"a": assets[si[q]], "b": assets[sj[q]], "longRun": r3(CL[si[q], sj[q]]),
+                       "recent": r3(C60[si[q], sj[q]]), "k": int(kk[q]), "n": int(nn[q]),
+                       "z": round(zq[int(q)][0], 2), "q": float(f"{zq[int(q)][1]:.2g}")} for q in watch],
         }
         report[p] = out_presets[p]
 
@@ -922,7 +975,7 @@ def main():
 
     beta_mkt = residualize(R2, win[["SPY"]].to_numpy())[1][0]
     doc = {
-        "version": 2.1,
+        "version": 2.2,
         "asof": str(cal[-1].date()),
         "start": str(lr.index[0].date()),
         "mapStart": str(win.index[0].date()),
@@ -931,7 +984,7 @@ def main():
         "textSource": "edgar" if len(failed) < len(stocks) else "yahoo",
         "textFallback": fallback if len(failed) < len(stocks) else [],
         "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
-                     "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t != "SPY"]} for p in FACTOR_COLS],
+                     "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t in ix]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],
                     "mcap": round(mcap[t] / 1e9, 1) if t in mcap and np.isfinite(mcap[t]) else None,
                     "vol": round(float(ann_vol[t]), 3) if np.isfinite(ann_vol[t]) else None,
@@ -959,6 +1012,9 @@ def main():
         log(f"  [{PRESET_LABEL[p]}] tested {P_['decoupleTested']}, passed {len(P_['decouple'])}")
         for r in P_["decouple"][:10]:
             log(f"    {r['a']:>6} {r['b']:<6} long-run {r['longRun']:.2f} -> 60d {r['recent']:.2f}  z {r['z']}  q {r['q']}")
+        log("    watchlist (closest to breaking, not significant):")
+        for r in P_["watch"][:5]:
+            log(f"      {r['a']:>6} {r['b']:<6} long-run {r['longRun']:.2f} -> 60d {r['recent']:.2f}  z {r['z']}  q {r['q']}")
 
     test = {"NVDA": 20, "MSFT": 15, "AVGO": 10, "JPM": 10, "BAC": 5, "XOM": 10, "DUK": 10, "NEE": 10, "O": 10}
     ti = [ix[t] for t in test]
@@ -978,7 +1034,7 @@ def main():
     names = {c["id"]: c["label"] for c in report["mkt"]["clusters"]["beh"]["labels"]}
     groups: dict[str, list] = {}
     for k_, t in enumerate(test):
-        g = names.get(ids[ix[t]], "Not in a cluster")
+        g = names[ids[ix[t]]]
         groups.setdefault(g, [0.0, 0.0, []])
         groups[g][0] += w[k_]
         groups[g][1] += rc[k_]
@@ -987,18 +1043,23 @@ def main():
     for g, (cap, risk, mem) in sorted(groups.items(), key=lambda kv: -kv[1][1]):
         flag = "  <- risk > capital by 10+ pts" if risk - cap >= 0.10 else ""
         log(f"    {g:<34} capital {cap:5.1%}  risk {risk:5.1%}  {', '.join(mem)}{flag}")
+    asg = report["mkt"]["clusters"]["beh"]["assigned"]
+    log("  assigned from HDBSCAN noise: " + (", ".join(t for t in test if asg[ix[t]]) or "none"))
 
     k = ix["KKR"]
     beta2 = C_raw[k] * sd2[k] / sd2
     beta1 = C_raw1[k] * sd1[k] / sd1
     liquid = np.array([a is not None and a >= 20 for a in (round(float(adv[t]) / 1e6, 1) if np.isfinite(adv[t]) else None for t in assets)])
-    order = [j for j in np.argsort(-(C_raw[k] ** 2)) if j != k and liquid[j]][:5]
-    log("\nKKR TOP 5 HEDGES (total returns, 2y)")
-    for j in order:
-        unstable = np.sign(beta1[j]) != np.sign(beta2[j]) or abs(beta1[j] - beta2[j]) > 0.5 * abs(beta2[j])
-        verb = "Short" if beta2[j] > 0 else "Buy"
-        log(f"    {verb} {abs(beta2[j]):.2f}x {assets[j]:<6} variance -{C_raw[k, j] ** 2:.0%}  1y beta {beta1[j]:.2f}"
-            f"  {'UNSTABLE' if unstable else 'stable'}")
+    ranked = [j for j in np.argsort(-(C_raw[k] ** 2)) if j != k and liquid[j]]
+    etf_h = [j for j in ranked if meta[assets[j]]["cls"] in ("etf", "bond")][:3]
+    peer_h = [j for j in ranked if meta[assets[j]]["cls"] == "stock"][:3]
+    for title, order in (("ETF HEDGES", etf_h), ("PEER HEDGES (pair-trade style)", peer_h)):
+        log(f"\nKKR {title} (total returns, 2y)")
+        for j in order:
+            unstable = np.sign(beta1[j]) != np.sign(beta2[j]) or abs(beta1[j] - beta2[j]) > 0.5 * abs(beta2[j])
+            verb = "Short" if beta2[j] > 0 else "Buy"
+            log(f"    {verb} {abs(beta2[j]):.2f}x {assets[j]:<6} variance -{C_raw[k, j] ** 2:.0%}  1y beta {beta1[j]:.2f}"
+                f"  {'UNSTABLE' if unstable else 'stable'}")
     log(f"\nbusiness text fallback to Yahoo: {len(failed)} of {len(stocks)} tickers")
     log(f"done in {time.time() - t0:.0f}s")
 

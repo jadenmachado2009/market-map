@@ -33,11 +33,13 @@ export type PresetData = {
   exposure: (number[] | null)[];
   sdRes: (number | null)[]; // daily sd of winsorised residuals, 2 years
   nnBeh: (NnBeh[] | null)[];
-  clusters: Record<View, { ids: number[]; labels: ClusterLabel[] }>;
+  // every plotted point has a cluster; assigned = HDBSCAN called it noise and it took its 5 nearest neighbours' majority
+  clusters: Record<View, { ids: number[]; labels: ClusterLabel[]; assigned: boolean[] }>;
   hidden: PairRow[];
   apart: PairRow[];
   decouple: DecoupleRow[];
   decoupleTested: number;
+  watch: DecoupleRow[]; // not significant: most negative z first, never a pair from `decouple`
 };
 
 export type ProData = {

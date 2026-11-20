@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Asset, NnBeh, NnBiz } from "../lib/types";
 import type { PairMatrix } from "../lib/lazy";
-import { hedge, hedgeUnstable } from "../lib/math";
+import { hedge, hedgeUnstable, splitHedges } from "../lib/math";
 import { fmt, money, pctLabel } from "../lib/scales";
 
 const LIQUID_ADV = 20; // $m a day: hedges must be easy to trade
@@ -194,7 +194,7 @@ function HedgeFinder({ i, matrix, raw2, raw1, assets, passes, onPickPair }: {
 
   if (!raw2 || !raw1) return <div className="mt-4 border-t border-line pt-3">{head("Best hedges", "Loading…")}</div>;
   const s = assets[i];
-  const rows: { j: number; beta: number; varCut: number; beta1: number; unstable: boolean }[] = [];
+  const rows: HedgeRow[] = [];
   for (let j = 0; j < assets.length; j++) {
     const hA = assets[j];
     if (j === i || !passes(j) || (hA.adv ?? 0) < LIQUID_ADV || !hA.sd || !s.sd) continue;
@@ -204,31 +204,49 @@ function HedgeFinder({ i, matrix, raw2, raw1, assets, passes, onPickPair }: {
     const beta1 = s.sd1y && hA.sd1y ? hedge(raw1(i, j), s.sd1y, hA.sd1y).beta : NaN;
     rows.push({ j, beta, varCut, beta1, unstable: hedgeUnstable(beta, beta1) });
   }
-  rows.sort((x, y) => y.varCut - x.varCut);
+  const { etf, peer } = splitHedges(rows, (r) => assets[r.j].cls);
   return (
     <div className="mt-4 border-t border-line pt-3">
-      {head("Best hedges", "On daily total returns over 2 years: the hedge ratio β = Cov ÷ Var and the share of variance it removes (ρ²). Liquid assets that pass your filters; ◆ = not a stock.")}
-      <ol className="mt-2 space-y-1 text-sm">
-        {rows.slice(0, 5).map((r) => (
-          <li key={r.j} className="flex items-baseline justify-between gap-2 tabular-nums">
-            <button type="button" onClick={() => onPickPair(r.j)} title={assets[r.j].name}
-              className="text-left text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent">
-              {r.beta >= 0 ? "Short" : "Buy"} {fmt(Math.abs(r.beta))}× <span className="font-medium">{assets[r.j].t}</span>
-              {assets[r.j].cls !== "stock" && <span className="ml-1 text-[10px] text-ink-3">◆</span>}
-            </button>
-            <span className="flex items-baseline gap-2 text-ink-2">
-              variance −{Math.round(r.varCut * 100)}%
-              {r.unstable && (
-                <span className="rounded-full border border-line px-1.5 text-[10px] text-ink-2"
-                  title={`Last-year ratio ${fmt(r.beta1)} vs ${fmt(r.beta)} over 2 years: sign flipped or moved more than 50%`}>
-                  unstable
-                </span>
-              )}
-            </span>
-          </li>
-        ))}
-      </ol>
+      {head("Best hedges", "On daily total returns over 2 years: the hedge ratio β = Cov ÷ Var and the share of variance it removes (ρ²). Liquid assets that pass your filters.")}
+      <h4 className="mt-2 text-xs font-medium text-ink-2">ETF hedges</h4>
+      {etf.length ? (
+        <HedgeRows rows={etf} assets={assets} onPickPair={onPickPair} />
+      ) : (
+        <p className="mt-1 text-sm text-ink-3">No ETF hedge passes your filters.</p>
+      )}
+      <h4 className="mt-3 text-xs font-medium text-ink-2">Peer hedges (pair-trade style)</h4>
+      {peer.length ? (
+        <HedgeRows rows={peer} assets={assets} onPickPair={onPickPair} />
+      ) : (
+        <p className="mt-1 text-sm text-ink-3">No single stock passes your filters.</p>
+      )}
     </div>
+  );
+}
+
+type HedgeRow = { j: number; beta: number; varCut: number; beta1: number; unstable: boolean };
+
+function HedgeRows({ rows, assets, onPickPair }: { rows: HedgeRow[]; assets: Asset[]; onPickPair: (j: number) => void }) {
+  return (
+    <ol className="mt-1 space-y-1 text-sm">
+      {rows.map((r) => (
+        <li key={r.j} className="flex items-baseline justify-between gap-2 tabular-nums">
+          <button type="button" onClick={() => onPickPair(r.j)} title={assets[r.j].name}
+            className="text-left text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent">
+            {r.beta >= 0 ? "Short" : "Buy"} {fmt(Math.abs(r.beta))}× <span className="font-medium">{assets[r.j].t}</span>
+          </button>
+          <span className="flex items-baseline gap-2 text-ink-2">
+            variance −{Math.round(r.varCut * 100)}%
+            {r.unstable && (
+              <span className="rounded-full border border-line px-1.5 text-[10px] text-ink-2"
+                title={`Last-year ratio ${fmt(r.beta1)} vs ${fmt(r.beta)} over 2 years: sign flipped or moved more than 50%`}>
+                unstable
+              </span>
+            )}
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

@@ -164,3 +164,18 @@ export function formatNum(v: number, digits = 2, signed = false): string {
   const s = Math.abs(r).toFixed(digits);
   return r < 0 ? "−" + s : (signed ? "+" : "") + s;
 }
+
+/** Asset classes that count as "ETF hedges": sector, index and factor equity ETFs, and bond ETFs. */
+export const ETF_HEDGE_CLASSES: readonly string[] = ["etf", "bond"];
+
+/**
+ * Splits hedge candidates into ETF hedges and peer (single-stock) hedges, each ranked by the share of
+ * variance removed and capped at n. Currencies, commodities and crypto belong to neither list.
+ */
+export function splitHedges<T extends { varCut: number }>(rows: T[], cls: (r: T) => string, n = 3): { etf: T[]; peer: T[] } {
+  const ranked = [...rows].sort((x, y) => y.varCut - x.varCut);
+  return {
+    etf: ranked.filter((r) => ETF_HEDGE_CLASSES.includes(cls(r))).slice(0, n),
+    peer: ranked.filter((r) => cls(r) === "stock").slice(0, n),
+  };
+}

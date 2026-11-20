@@ -55,8 +55,8 @@ export default function ProPage() {
             <p>
               {data.textSource === "edgar" ? (
                 <>
-                  Source: Item 1 (Business) of each company&apos;s latest SEC 10-K, up to about 3,000 words
-                  {data.textFallback.length > 0 && ` (${data.textFallback.length} companies fell back to Yahoo summaries)`}.
+                  Source: SEC 10-K Item 1.
+                  {data.textFallback.length > 0 && ` ${data.textFallback.length} companies fell back to Yahoo summaries.`}
                 </>
               ) : (
                 <>Source: Yahoo Finance business summaries for now. The pipeline reads SEC 10-K Item 1 once its SEC contact is configured.</>

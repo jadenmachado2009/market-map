@@ -50,8 +50,9 @@ export function Portfolio({ pf, onText, assets, factorText, matrix, rawCorr, sdR
   // Capital share vs risk share by cluster, sorted by risk
   const groups = new Map<string, { label: string; cap: number; risk: number; members: string[] }>();
   h.forEach((x, k) => {
-    const c = clusterIds[x.i] ?? -1;
-    const label = c === -1 ? "Not in a cluster" : clusterLabels.find((l) => l.id === c)?.label ?? `Cluster ${c}`;
+    // Every plotted point has a cluster. A holding this preset uses as a factor (SPY; TLT, USMV; …) isn't plotted,
+    // so it is grouped by asset class: "Equity ETFs", "Bonds".
+    const label = clusterLabels.find((l) => l.id === clusterIds[x.i])?.label ?? assets[x.i].sector;
     const g = groups.get(label) ?? { label, cap: 0, risk: 0, members: [] };
     g.cap += x.w;
     g.risk += rc[k] ?? 0;

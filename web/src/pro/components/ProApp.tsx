@@ -218,7 +218,7 @@ export default function ProApp({ data }: { data: ProData }) {
         <div className="mt-2">
           <FilterBar filters={filters} onChange={setFilters} shown={visible.filter((v, i) => v && (view === "beh" || P.biz[i] !== null)).length} total={N} />
           {presetMeta.notPlotted.length > 0 && (
-            <p className="mt-1 text-xs text-ink-3">{presetMeta.notPlotted.join(", ")} used as factors, so not plotted.</p>
+            <p className="mt-1 text-xs text-ink-3">{presetMeta.notPlotted.join(", ")} {presetMeta.notPlotted.length === 1 ? "is the factor" : "are factors"} here, so not plotted.</p>
           )}
         </div>
         <p className="mt-2 text-sm text-ink-2">
@@ -304,6 +304,7 @@ export default function ProApp({ data }: { data: ProData }) {
           hidden={P.hidden}
           apart={P.apart}
           decouple={P.decouple}
+          watch={P.watch}
           tested={P.decoupleTested}
           ok={(t) => index.has(t) && ok(index.get(t)!)}
           active={pair ? { a: assets[pair[0]].t, b: assets[pair[1]].t } : null}

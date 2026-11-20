@@ -162,6 +162,75 @@ class Decoupling(unittest.TestCase):
         np.testing.assert_array_equal(p.stable_pair(k, n, 11), [True, False, False, False, True, True])
 
 
+class NoiseAssignment(unittest.TestCase):
+    def test_hdbscan_plus_assignment_leaves_no_unclustered_points(self):
+        rng = np.random.default_rng(0)
+        blobs = [rng.normal(c, 0.05, (40, 2)) for c in ((0, 0), (1, 0), (0, 1))]
+        Y = np.vstack(blobs + [rng.uniform(-0.5, 1.5, (25, 2))])     # 25 scattered points: HDBSCAN noise
+        raw = p.hdbscan_labels(Y)
+        self.assertGreater((raw == -1).sum(), 0)                       # the test is only useful if noise exists
+        ids, assigned = p.assign_noise(raw, Y)
+        self.assertEqual(int((ids == -1).sum()), 0)
+        np.testing.assert_array_equal(assigned, raw == -1)            # exactly the noise points are flagged
+        np.testing.assert_array_equal(ids[raw != -1], raw[raw != -1])  # clustered points keep their cluster
+
+    def test_majority_of_five_nearest_clustered_neighbours(self):
+        # cluster 0 at x = 0..0.4, cluster 1 at x = 1..1.4; noise at 0.6 is nearer cluster 0's members
+        Y = np.array([[0.0, 0], [0.1, 0], [0.2, 0], [0.3, 0], [0.4, 0],
+                      [1.0, 0], [1.1, 0], [1.2, 0], [1.3, 0], [1.4, 0], [0.6, 0], [0.95, 0]])
+        ids = np.array([0] * 5 + [1] * 5 + [-1, -1])
+        out, assigned = p.assign_noise(ids, Y, k=5)
+        self.assertEqual(out[10], 0)        # 5 nearest: 0.4, 0.3, 0.2, 1.0, 0.1 -> 4 votes for 0
+        self.assertEqual(out[11], 1)        # 5 nearest: 1.0, 1.1, 1.2, 1.3, 1.4 -> all 1
+        self.assertEqual(assigned.tolist(), [False] * 10 + [True, True])
+
+    def test_votes_come_from_clustered_points_only_and_ties_go_to_nearest(self):
+        # k = 4 covers all four clustered points, so every noise point sees a 2-2 tie; noise points never vote
+        Y = np.array([[0.0, 0], [0.1, 0], [1.0, 0], [1.1, 0], [0.45, 0], [0.58, 0], [0.59, 0]])
+        ids = np.array([0, 0, 1, 1, -1, -1, -1])
+        out, _ = p.assign_noise(ids, Y, k=4)
+        # 0.45: nearest member 0.1 (0.35 away) -> 0;  0.58 / 0.59: nearest member 1.0 (0.42 / 0.41) -> 1
+        self.assertEqual(out.tolist(), [0, 0, 1, 1, 0, 1, 1])
+
+    def test_assigned_points_cannot_change_a_cluster_name(self):
+        # FSLR-style case: a solar name joining the analog-chip cluster must not flip it to the broad label
+        meta = {t: {"sub": "Semiconductors", "sector": "Information Technology"} for t in ["ADI", "TXN", "ON", "FSLR"]}
+        overrides = [{"label": "Analog & auto chips", "tickers": ["ADI", "TXN", "ON"]},
+                     {"label": "AI hardware & chips", "subs": ["Semiconductors"]}]
+        ids, Y = np.array([0, 0, 0, 0]), np.zeros((4, 2))
+        tick = ["ADI", "TXN", "ON", "FSLR"]
+        flipped = p.label_clusters(ids, Y, tick, meta, overrides)                       # counting FSLR: 3/4 vs 4/4
+        kept = p.label_clusters(ids, Y, tick, meta, overrides, np.array([False, False, False, True]))
+        self.assertEqual(flipped[0]["label"], "AI hardware & chips")
+        self.assertEqual(kept[0]["label"], "Analog & auto chips")
+        self.assertEqual(kept[0]["n"], 4)                                               # size still counts everyone
+
+    def test_degenerate_cases(self):
+        Y = np.zeros((3, 2))
+        out, assigned = p.assign_noise(np.array([-1, -1, -1]), Y)
+        self.assertEqual(out.tolist(), [0, 0, 0])
+        self.assertTrue(assigned.all())
+        out, assigned = p.assign_noise(np.array([2, 2, 3]), Y)
+        self.assertEqual(out.tolist(), [2, 2, 3])
+        self.assertFalse(assigned.any())
+
+
+class Watchlist(unittest.TestCase):
+    def test_excludes_significant_pairs_and_ranks_by_z(self):
+        z = np.array([-4.0, -1.0, -3.0, -2.5, 0.5, -0.2, -3.5])
+        sig = np.array([True, False, False, False, False, False, True])
+        w = p.watchlist(z, sig, n=5)
+        self.assertEqual(w.tolist(), [2, 3, 1, 5])     # -3.0, -2.5, -1.0, -0.2; never 0 or 6, never the rising pair
+        self.assertFalse(sig[w].any())
+        self.assertTrue((np.diff(z[w]) >= 0).all())
+
+    def test_caps_length_and_handles_empty(self):
+        z = -np.arange(1, 40, dtype=float)
+        self.assertEqual(len(p.watchlist(z, np.zeros(39, bool), n=5)), 5)
+        self.assertEqual(p.watchlist(np.array([]), np.array([], bool)).size, 0)
+        self.assertEqual(p.watchlist(np.array([-2.0, -1.0]), np.array([True, True])).size, 0)
+
+
 class TriangleIndex(unittest.TestCase):
     def test_matches_numpy_order(self):
         n = 7

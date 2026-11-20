@@ -115,3 +115,26 @@ test("sign formatting: round first, no '−0.00', '+' only for positives when as
   assert.equal(formatNum(-1.234, 1), "−1.2");
   assert.equal(formatNum(NaN), "–");
 });
+
+import { splitHedges } from "../src/pro/lib/math.ts";
+
+test("hedge split: a stock never lands in the ETF list; each list ranked by variance cut, top 3", () => {
+  const classes = ["stock", "etf", "bond", "fx", "commodity", "crypto"];
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let trial = 0; trial < 200; trial++) {
+    const rows = Array.from({ length: 1 + Math.floor(rand() * 40) }, (_, j) => ({ j, cls: classes[Math.floor(rand() * 6)], varCut: rand() }));
+    const { etf, peer } = splitHedges(rows, (r) => r.cls);
+    assert.ok(etf.every((r) => r.cls === "etf" || r.cls === "bond"));
+    assert.ok(etf.every((r) => r.cls !== "stock"));
+    assert.ok(peer.every((r) => r.cls === "stock"));
+    assert.ok(etf.length <= 3 && peer.length <= 3);
+    for (const list of [etf, peer]) for (let k = 1; k < list.length; k++) assert.ok(list[k - 1].varCut >= list[k].varCut);
+    const bestEtf = rows.filter((r) => r.cls === "etf" || r.cls === "bond").sort((x, y) => y.varCut - x.varCut)[0];
+    if (bestEtf) assert.equal(etf[0], bestEtf);
+  }
+  // a stock with a bigger variance cut than any ETF still goes to the peer list, and no ETF means an empty list
+  const only = splitHedges([{ cls: "stock", varCut: 0.9 }, { cls: "commodity", varCut: 0.8 }], (r) => r.cls);
+  assert.deepEqual(only.etf, []);
+  assert.equal(only.peer.length, 1);
+});
