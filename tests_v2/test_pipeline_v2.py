@@ -33,12 +33,14 @@ class FactorRegression(unittest.TestCase):
         beta = np.cov(self.R[:, 0], f[:, 0])[0, 1] / np.var(f[:, 0], ddof=1)
         self.assertAlmostEqual(B[0, 0], beta, places=10)
 
-    def test_exposure_transform(self):
-        # an asset that IS the small-cap ETF: market 1, size 1; a long-value/short-growth asset: value 1
-        raw = np.array([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, -1.0]])  # SPY,TLT,IWM,IWD,IWF x 2 assets
-        ex = p.exposures("full", raw)
-        np.testing.assert_allclose(ex[:, 0], [1, 0, 1, 0])
-        np.testing.assert_allclose(ex[:, 1], [0, 0, 0, 1])
+    def test_spread_basis_gives_identical_residuals(self):
+        # [SPY, TLT, USMV, IWM, IWD, IWF] and the readable spread basis span the same space
+        rng = np.random.default_rng(4)
+        spy, tlt, usmv, iwm, iwd, iwf = rng.normal(0, 0.01, (6, 800))
+        raw = np.column_stack([spy, tlt, usmv, iwm, iwd, iwf])
+        spread = np.column_stack([spy, tlt, usmv - spy, iwm - spy, iwd - iwf, (iwd + iwf) / 2 - spy])
+        R = rng.normal(0, 0.01, (800, 4)) + raw @ rng.normal(0, 1, (6, 4))
+        np.testing.assert_allclose(p.residualize(R, raw)[0], p.residualize(R, spread)[0], atol=1e-12)
 
 
 class Winsorise(unittest.TestCase):
@@ -101,6 +103,63 @@ class Neff(unittest.TestCase):
     def test_two_blocks(self):
         C = np.kron(np.eye(2), np.ones((3, 3)))   # two groups of perfect clones
         self.assertAlmostEqual(p.neff(C), 2.0)
+
+
+class CovarianceNeff(unittest.TestCase):
+    def test_uncorrelated_equal_vol_equal_weight_gives_n(self):
+        for n in (2, 9, 20):
+            S = np.eye(n) * 0.02 ** 2
+            self.assertAlmostEqual(p.neff_cov(S, np.full(n, 1 / n)), n)
+
+    def test_perfectly_correlated_gives_one(self):
+        sd = np.array([0.01, 0.02, 0.03, 0.015])
+        S = np.outer(sd, sd)                      # every correlation = 1
+        self.assertAlmostEqual(p.neff_cov(S, np.array([0.4, 0.3, 0.2, 0.1])), 1.0)
+
+    def test_matches_eigenvalue_definition(self):
+        rng = np.random.default_rng(5)
+        A = rng.normal(size=(7, 7))
+        S = A @ A.T / 100
+        w = rng.uniform(0.5, 2, 7)
+        w /= w.sum()
+        lam = np.linalg.eigvalsh(np.diag(w) @ S @ np.diag(w))
+        self.assertAlmostEqual(p.neff_cov(S, w), lam.sum() ** 2 / (lam ** 2).sum(), places=10)
+
+    def test_risk_contributions_sum_to_one(self):
+        rng = np.random.default_rng(6)
+        A = rng.normal(size=(9, 9))
+        S = A @ A.T
+        w = rng.uniform(0, 1, 9)
+        rc = p.risk_contrib(S, w)
+        self.assertAlmostEqual(rc.sum(), 1.0)
+        # equal weights, uncorrelated, equal vol -> equal risk shares
+        np.testing.assert_allclose(p.risk_contrib(np.eye(4), np.full(4, 0.25)), 0.25)
+
+
+class Decoupling(unittest.TestCase):
+    def test_fisher_z(self):
+        # atanh(0.2) - atanh(0.7) over SE 1/sqrt(57)
+        expected = (np.arctanh(0.2) - np.arctanh(0.7)) * np.sqrt(57)
+        self.assertAlmostEqual(float(p.fisher_z(0.2, 0.7, n=60)), expected)
+        self.assertAlmostEqual(float(p.fisher_z(0.5, 0.5)), 0.0)
+        self.assertLess(float(p.fisher_z(0.1, 0.8)), -6)            # a big fall is very significant
+
+    def test_benjamini_hochberg(self):
+        # textbook example: m = 10, q = 0.05; the 3 smallest pass (0.04 > 4*0.05/10 = 0.02)
+        pv = np.array([0.001, 0.008, 0.012, 0.04, 0.06, 0.2, 0.3, 0.5, 0.7, 0.9])
+        rej, adj = p.bh_reject(pv, 0.05)
+        np.testing.assert_array_equal(rej, [True, True, True] + [False] * 7)
+        self.assertAlmostEqual(adj[2], 0.04)                        # 0.012 * 10 / 3
+        # order independence and monotone adjusted values
+        rej2, _ = p.bh_reject(pv[::-1], 0.05)
+        np.testing.assert_array_equal(rej2, rej[::-1])
+        self.assertEqual(p.bh_reject(np.array([]))[0].size, 0)
+
+    def test_stability_rule(self):
+        k = np.array([6, 5, 4, 3, 4, 5])
+        n = np.array([11, 11, 7, 5, 5, 8])
+        # 6/11 ok; 5/11 no; 4/7 no (needs 5 = ceil(4.2)); 3/5 no (needs >= 4 held); 4/5 ok; 5/8 ok
+        np.testing.assert_array_equal(p.stable_pair(k, n, 11), [True, False, False, False, True, True])
 
 
 class TriangleIndex(unittest.TestCase):

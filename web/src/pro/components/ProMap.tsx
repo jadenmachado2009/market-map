@@ -71,16 +71,38 @@ export default function ProMap(p: ProMapProps) {
   const placed = (i: number) => (p.view === "biz" ? p.biz[i] !== null : p.beh[i] !== null);
   const shown = (i: number) => placed(i) && p.visible[i];
 
-  // Initial view: the data, both layouts, with 5% padding (the parent remounts this per preset).
+  // The view fits the current layout's data with 5% padding, so the map fills the canvas.
   const fit = useMemo(() => {
     const pts: XY[] = [];
     p.assets.forEach((_, i) => {
-      if (p.beh[i]) pts.push(project(p.beh[i]!));
-      if (p.biz[i]) pts.push(project(p.biz[i]!));
+      const xy = p.view === "biz" ? p.biz[i] : p.beh[i];
+      if (xy) pts.push(project(xy));
     });
     return fitTo(pts);
-  }, [p.assets, p.beh, p.biz]);
+  }, [p.assets, p.beh, p.biz, p.view]);
   const [vb, setVb] = useState<VB>(fit);
+  const vbRef = useRef(vb);
+  const userZoomed = useRef(false);
+  useEffect(() => {
+    vbRef.current = vb;
+  });
+  // When the view or preset changes, glide the camera to the new fit alongside the dots,
+  // unless the reader has zoomed or panned themselves.
+  useEffect(() => {
+    if (userZoomed.current) return;
+    const from = vbRef.current;
+    let t0 = 0;
+    let id = 0;
+    const step = (now: number) => {
+      if (!t0) t0 = now;
+      const t = Math.min(1, (now - t0) / 900);
+      const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+      setVb({ x: from.x + (fit.x - from.x) * e, y: from.y + (fit.y - from.y) * e, w: from.w + (fit.w - from.w) * e });
+      if (t < 1) id = requestAnimationFrame(step);
+    };
+    id = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(id);
+  }, [fit]);
 
   useEffect(() => {
     const el = svgRef.current;
@@ -90,6 +112,7 @@ export default function ProMap(p: ProMapProps) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
+      userZoomed.current = true;
       const r = el.getBoundingClientRect();
       const dy = Math.max(-50, Math.min(50, e.deltaY));
       setVb((v) => zoomed(v, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, Math.exp(dy * 0.01)));
@@ -144,7 +167,7 @@ export default function ProMap(p: ProMapProps) {
     return best;
   };
 
-  const r = 3.6 * k;
+  const r = 5 * k; // 40% bigger than v2.0
   const isMain = (i: number) => i === sel || (p.pair?.includes(i) ?? false);
   const quiet = sel === null && p.pair === null;
   const labelled = [
@@ -162,6 +185,7 @@ export default function ProMap(p: ProMapProps) {
     const pts = ids.filter(shown).map((i) => pos[i]);
     if (!pts.length) return;
     const v = fitTo(pts);
+    userZoomed.current = true;
     setVb(clampVb(v.x - v.w * 0.15, v.y - v.w * 0.15, Math.max(v.w * 1.3, 90)));
   };
 
@@ -196,7 +220,10 @@ export default function ProMap(p: ProMapProps) {
               svgRef.current?.setPointerCapture(e.pointerId);
             }
             if (d.moved) {
-              if (isZoomed) setVb((v) => clampVb(d.vx - dx * k, d.vy - dy * k, v.w));
+              if (isZoomed) {
+                userZoomed.current = true;
+                setVb((v) => clampVb(d.vx - dx * k, d.vy - dy * k, v.w));
+              }
               p.onHover(null);
               return;
             }
@@ -223,7 +250,7 @@ export default function ProMap(p: ProMapProps) {
               className="ppt"
               style={{
                 transform: translate(pos[i]),
-                opacity: !shown(i) ? 0 : p.focus && !p.focus.has(i) ? 0.26 : 1,
+                opacity: !shown(i) ? 0 : p.focus && !p.focus.has(i) ? 0.45 : 1,
                 pointerEvents: "none",
               }}
             >
@@ -234,9 +261,11 @@ export default function ProMap(p: ProMapProps) {
 
         <g key={`c-${p.view}-${p.linkKey.split("|")[0]}`} className={p.lateLinks ? "plinks late" : "plinks"} pointerEvents="none">
           {clusterLabels.map((c) => (
-            <text key={c.id} x={c.x} y={c.y} fontSize={c.size} textAnchor="middle" fontWeight={600}
-              className="phalo pclabel" style={{ fill: "var(--ink-3)", strokeWidth: 3 * k, opacity: p.focus ? 0.55 : 0.9 }}>
-              {c.text}
+            <text key={c.id} x={c.x} y={c.y - ((c.lines.length - 1) * c.size * 1.15) / 2} fontSize={c.size} textAnchor="middle" fontWeight={600}
+              className="phalo pclabel" style={{ fill: "var(--ink-3)", strokeWidth: 3 * k, opacity: p.focus ? 0.6 : 0.9 }}>
+              {c.lines.map((line, n) => (
+                <tspan key={n} x={c.x} dy={n === 0 ? 0 : c.size * 1.15}>{line}</tspan>
+              ))}
             </text>
           ))}
         </g>
@@ -293,10 +322,10 @@ export default function ProMap(p: ProMapProps) {
       {h !== null && <Tooltip a={p.assets[h]} x={(pos[h][0] - vb.x) / k} y={(pos[h][1] - vb.y) / k} width={width} />}
 
       <div className="absolute right-1 top-1 flex flex-col gap-1">
-        <ZoomButton label="Zoom in" onClick={() => setVb((v) => zoomed(v, 0.5, 0.5, 1 / 1.6))}>+</ZoomButton>
-        <ZoomButton label="Zoom out" onClick={() => setVb((v) => zoomed(v, 0.5, 0.5, 1.6))} disabled={vb.w >= SIZE}>−</ZoomButton>
+        <ZoomButton label="Zoom in" onClick={() => { userZoomed.current = true; setVb((v) => zoomed(v, 0.5, 0.5, 1 / 1.6)); }}>+</ZoomButton>
+        <ZoomButton label="Zoom out" onClick={() => { userZoomed.current = true; setVb((v) => zoomed(v, 0.5, 0.5, 1.6)); }} disabled={vb.w >= SIZE}>−</ZoomButton>
         {(sel !== null || p.pair || p.holdings.size > 0) && <ZoomButton label="Zoom to selection" onClick={fitFocus}>⤢</ZoomButton>}
-        {isZoomed && <ZoomButton label="Reset zoom" onClick={() => setVb(fit)}>↺</ZoomButton>}
+        {isZoomed && <ZoomButton label="Reset zoom" onClick={() => { userZoomed.current = false; setVb(fit); }}>↺</ZoomButton>}
       </div>
     </div>
   );
@@ -310,7 +339,7 @@ const inside = (b: Box, vb: VB) => b[0] >= vb.x && b[1] >= vb.y && b[2] <= vb.x 
 // with nothing placed so far wins; labels that fit nowhere are dropped (the panel lists them).
 function placeLabels(ids: number[], pos: XY[], text: (i: number) => string, isMain: (i: number) => boolean, k: number, vb: VB) {
   const taken: Box[] = ids.map((i) => {
-    const d = (isMain(i) ? 7 : 5) * k;
+    const d = (isMain(i) ? 9.5 : 7) * k;
     return [pos[i][0] - d, pos[i][1] - d, pos[i][0] + d, pos[i][1] + d];
   });
   const labels = new Map<number, { dx: number; dy: number; size: number }>();
@@ -318,7 +347,7 @@ function placeLabels(ids: number[], pos: XY[], text: (i: number) => string, isMa
     const size = (isMain(i) ? 13 : 11.5) * k;
     const w = 0.62 * size * text(i).length + 2 * k;
     const hgt = size;
-    const g = (isMain(i) ? 9 : 7) * k;
+    const g = (isMain(i) ? 11.5 : 9) * k;
     const [x, y] = pos[i];
     const spots: [number, number][] = [
       [x + g, y - hgt / 2], [x - g - w, y - hgt / 2], [x - w / 2, y - g - hgt], [x - w / 2, y + g],
@@ -335,23 +364,37 @@ function placeLabels(ids: number[], pos: XY[], text: (i: number) => string, isMa
   return { labels, taken };
 }
 
-// Cluster names sit at the cluster centre; bigger clusters claim their spot first, and a name
-// that would collide (or fall off-screen) is skipped. Constant on-screen size at every zoom.
+// Cluster names sit at the cluster centre (median of members); bigger clusters claim their spot
+// first, and a name that would collide (or fall off-screen) is skipped. Long names wrap onto two
+// lines instead of being cut. Constant on-screen size at every zoom.
+function wrap2(label: string): string[] {
+  if (label.length <= 20) return [label];
+  const words = label.split(" ");
+  let best = [label], bestDiff = Infinity;
+  for (let k = 1; k < words.length; k++) {
+    const a = words.slice(0, k).join(" "), b = words.slice(k).join(" ");
+    const diff = Math.abs(a.length - b.length);
+    if (diff < bestDiff) [best, bestDiff] = [[a, b], diff];
+  }
+  return best;
+}
+
 function placeClusterLabels(cl: ClusterLabel[], k: number, vb: VB, taken: Box[]) {
-  const out: { id: number; x: number; y: number; size: number; text: string }[] = [];
+  const out: { id: number; x: number; y: number; size: number; lines: string[] }[] = [];
   const boxes = [...taken];
   const used = new Set<string>(); // two clusters with the same name: label only the bigger one
   for (const c of [...cl].sort((a, b) => b.n - a.n)) {
     if (used.has(c.label)) continue;
     const [x, y] = project([c.x, c.y]);
-    const text = c.label.length > 34 ? c.label.slice(0, 32) + "…" : c.label;
+    const lines = wrap2(c.label);
     const size = 9.5 * k;
-    const w = 0.66 * size * text.length;
-    const box: Box = [x - w / 2, y - size, x + w / 2, y + size * 0.3];
+    const w = 0.66 * size * Math.max(...lines.map((l) => l.length));
+    const h = size * 1.15 * lines.length;
+    const box: Box = [x - w / 2, y - h / 2 - size * 0.4, x + w / 2, y + h / 2];
     if (!inside(box, vb) || boxes.some((b) => overlaps(b, box))) continue;
     boxes.push(box);
     used.add(c.label);
-    out.push({ id: c.id, x, y, size, text });
+    out.push({ id: c.id, x, y: y + size * 0.35, size, lines });
   }
   return out;
 }

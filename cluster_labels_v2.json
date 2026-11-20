@@ -1,14 +1,446 @@
 [
   {
-    "label": "Rate-sensitive (utilities, REITs)",
-    "sectors": ["Utilities", "Real Estate"]
+    "label": "Health insurers",
+    "tickers": [
+      "UNH",
+      "ELV",
+      "CI",
+      "CVS",
+      "HUM",
+      "CNC",
+      "MOH"
+    ]
+  },
+  {
+    "label": "Hospitals & drug distributors",
+    "tickers": [
+      "CAH",
+      "COR",
+      "MCK",
+      "HCA",
+      "UHS",
+      "DVA",
+      "HSIC",
+      "THC"
+    ]
+  },
+  {
+    "label": "Ratings & index providers",
+    "tickers": [
+      "SPGI",
+      "MCO",
+      "MSCI",
+      "ICE",
+      "NDAQ",
+      "FDS",
+      "VRSK",
+      "GRMN"
+    ]
+  },
+  {
+    "label": "Payments & consumer credit",
+    "tickers": [
+      "V",
+      "MA",
+      "PYPL",
+      "AXP",
+      "XYZ",
+      "CPAY",
+      "FISV",
+      "FIS",
+      "GPN",
+      "SYF",
+      "COF",
+      "JKHY",
+      "FICO"
+    ]
+  },
+  {
+    "label": "Freight, rail & packaging",
+    "tickers": [
+      "CHRW",
+      "CSX",
+      "EXPD",
+      "FDX",
+      "JBHT",
+      "NSC",
+      "ODFL",
+      "UNP",
+      "UPS",
+      "AMCR",
+      "AVY",
+      "BALL",
+      "IP",
+      "PKG",
+      "SW",
+      "DOW",
+      "GWW"
+    ]
+  },
+  {
+    "label": "Building, water & flow products",
+    "tickers": [
+      "AOS",
+      "FERG",
+      "HD",
+      "LOW",
+      "IEX",
+      "MAS",
+      "NDSN",
+      "PNR",
+      "VLTO",
+      "XYL"
+    ]
+  },
+  {
+    "label": "Analog & auto chips",
+    "tickers": [
+      "ADI",
+      "MCHP",
+      "MPWR",
+      "NXPI",
+      "ON",
+      "QCOM",
+      "SWKS",
+      "TXN",
+      "MU",
+      "INTC",
+      "STM"
+    ]
+  },
+  {
+    "label": "Cyber, cloud & chip-design software",
+    "tickers": [
+      "CRWD",
+      "DDOG",
+      "FTNT",
+      "OKTA",
+      "PANW",
+      "ZS",
+      "NET",
+      "TWLO",
+      "CDNS",
+      "SNPS",
+      "AKAM",
+      "SNOW",
+      "MDB"
+    ]
+  },
+  {
+    "label": "Crypto & retail-trading names",
+    "tickers": [
+      "COIN",
+      "HOOD",
+      "IBKR",
+      "BTC-USD",
+      "ETH-USD",
+      "PLTR",
+      "APP",
+      "RDDT",
+      "AXON",
+      "TSLA",
+      "MSTR",
+      "XYZ"
+    ]
+  },
+  {
+    "label": "Platforms & e-commerce",
+    "tickers": [
+      "GOOGL",
+      "GOOG",
+      "AMZN",
+      "META",
+      "ABNB",
+      "BKNG",
+      "DASH",
+      "UBER",
+      "EXPE",
+      "CVNA",
+      "EBAY",
+      "NFLX",
+      "APP",
+      "CPRT",
+      "ETSY",
+      "LYFT"
+    ]
+  },
+  {
+    "label": "Exchanges & waste collectors",
+    "tickers": [
+      "CBOE",
+      "CME",
+      "ICE",
+      "NDAQ",
+      "CTAS",
+      "RSG",
+      "WM",
+      "ROL",
+      "MSI",
+      "VRSK"
+    ]
+  },
+  {
+    "label": "Defensive retail & fast food",
+    "tickers": [
+      "AZO",
+      "ORLY",
+      "COST",
+      "WMT",
+      "CASY",
+      "DPZ",
+      "MCD",
+      "TJX",
+      "ROST",
+      "DG",
+      "DLTR",
+      "YUM",
+      "BJ"
+    ]
   },
   {
     "label": "Alt managers",
-    "tickers": ["KKR", "BX", "APO", "ARES", "BLK", "TPG", "CG", "OWL"]
+    "tickers": [
+      "KKR",
+      "BX",
+      "APO",
+      "ARES",
+      "BLK",
+      "TPG",
+      "CG",
+      "OWL",
+      "BEN",
+      "IVZ"
+    ]
   },
   {
-    "label": "AI capex",
-    "tickers": ["NVDA", "AVGO", "AMD", "MU", "ANET", "VRT", "VST", "CEG", "GEV", "ETN", "PWR", "FIX", "EME", "SMCI", "DELL", "COHR", "LITE", "GLW", "TLN", "NRG", "HPE", "MRVL"]
+    "label": "Insurance brokers",
+    "subs": [
+      "Insurance Brokers"
+    ]
+  },
+  {
+    "label": "Dollar, gold & world markets",
+    "subs": [
+      "Currencies",
+      "Commodities",
+      "Gold",
+      "Copper"
+    ],
+    "tickers": [
+      "EFA",
+      "EEM",
+      "NEM",
+      "FCX"
+    ]
+  },
+  {
+    "label": "AI hardware & chips",
+    "subs": [
+      "Semiconductors",
+      "Semiconductor Materials & Equipment",
+      "Technology Hardware, Storage & Peripherals",
+      "Communications Equipment",
+      "Electronic Components",
+      "Electronic Manufacturing Services",
+      "Electrical Components & Equipment",
+      "Heavy Electrical Equipment"
+    ]
+  },
+  {
+    "label": "Power, grid & aerospace",
+    "subs": [
+      "Aerospace & Defense",
+      "Electrical Components & Equipment",
+      "Heavy Electrical Equipment",
+      "Construction & Engineering"
+    ]
+  },
+  {
+    "label": "Machinery, transport & building products",
+    "subs": [
+      "Industrial Machinery & Supplies & Components",
+      "Building Products",
+      "Construction Machinery & Heavy Transportation Equipment",
+      "Trading Companies & Distributors",
+      "Agricultural & Farm Machinery",
+      "Industrial Conglomerates",
+      "Air Freight & Logistics",
+      "Rail Transportation",
+      "Cargo Ground Transportation",
+      "Aerospace & Defense",
+      "Automotive Parts & Equipment"
+    ]
+  },
+  {
+    "label": "Banks & asset managers",
+    "subs": [
+      "Asset Management & Custody Banks",
+      "Diversified Banks",
+      "Regional Banks",
+      "Investment Banking & Brokerage",
+      "Consumer Finance"
+    ]
+  },
+  {
+    "label": "Utilities (bond proxies)",
+    "subs": [
+      "Electric Utilities",
+      "Multi-Utilities",
+      "Gas Utilities",
+      "Water Utilities",
+      "Independent Power Producers & Energy Traders"
+    ]
+  },
+  {
+    "label": "REITs & real estate",
+    "subs": [
+      "Data Center REITs",
+      "Health Care REITs",
+      "Hotel & Resort REITs",
+      "Industrial REITs",
+      "Multi-Family Residential REITs",
+      "Office REITs",
+      "Other Specialized REITs",
+      "Retail REITs",
+      "Self-Storage REITs",
+      "Single-Family Residential REITs",
+      "Telecom Tower REITs",
+      "Timber REITs",
+      "Real Estate Services"
+    ]
+  },
+  {
+    "label": "Oil, gas & farm commodities",
+    "subs": [
+      "Integrated Oil & Gas",
+      "Oil & Gas Equipment & Services",
+      "Oil & Gas Exploration & Production",
+      "Oil & Gas Refining & Marketing",
+      "Oil & Gas Storage & Transportation",
+      "Agricultural Products & Services",
+      "Fertilizers & Agricultural Chemicals",
+      "Commodity Chemicals"
+    ]
+  },
+  {
+    "label": "Consumer staples",
+    "subs": [
+      "Consumer Staples Merchandise Retail",
+      "Distillers & Vintners",
+      "Food Distributors",
+      "Food Retail",
+      "Household Products",
+      "Packaged Foods & Meats",
+      "Personal Care Products",
+      "Soft Drinks & Non-alcoholic Beverages",
+      "Tobacco",
+      "Agricultural Products & Services"
+    ]
+  },
+  {
+    "label": "Medtech & devices",
+    "subs": [
+      "Health Care Equipment",
+      "Health Care Supplies",
+      "Health Care Technology"
+    ]
+  },
+  {
+    "label": "Pharma & biotech",
+    "subs": [
+      "Biotechnology",
+      "Pharmaceuticals"
+    ]
+  },
+  {
+    "label": "Lab & life-science tools",
+    "subs": [
+      "Life Sciences Tools & Services"
+    ]
+  },
+  {
+    "label": "Health insurers, hospitals & distributors",
+    "subs": [
+      "Managed Health Care",
+      "Health Care Services",
+      "Health Care Facilities",
+      "Health Care Distributors"
+    ]
+  },
+  {
+    "label": "Insurers",
+    "subs": [
+      "Property & Casualty Insurance",
+      "Multi-line Insurance",
+      "Life & Health Insurance",
+      "Reinsurance",
+      "Multi-Sector Holdings"
+    ]
+  },
+  {
+    "label": "Software & IT services",
+    "subs": [
+      "Application Software",
+      "Systems Software",
+      "IT Consulting & Other Services",
+      "Internet Services & Infrastructure",
+      "Technology Distributors"
+    ]
+  },
+  {
+    "label": "Financial data, payroll & payments",
+    "subs": [
+      "Human Resource & Employment Services",
+      "Research & Consulting Services",
+      "Transaction & Payment Processing Services",
+      "Data Processing & Outsourced Services",
+      "Financial Exchanges & Data",
+      "Real Estate Services"
+    ]
+  },
+  {
+    "label": "Packaging & chemicals",
+    "subs": [
+      "Paper & Plastic Packaging Products & Materials",
+      "Metal, Glass & Plastic Containers",
+      "Industrial Gases",
+      "Specialty Chemicals",
+      "Commodity Chemicals",
+      "Construction Materials",
+      "Steel"
+    ]
+  },
+  {
+    "label": "Media & entertainment",
+    "subs": [
+      "Movies & Entertainment",
+      "Broadcasting",
+      "Publishing",
+      "Advertising",
+      "Cable & Satellite",
+      "Interactive Home Entertainment",
+      "Integrated Telecommunication Services",
+      "Wireless Telecommunication Services"
+    ]
+  },
+  {
+    "label": "Travel & leisure",
+    "subs": [
+      "Hotels, Resorts & Cruise Lines",
+      "Passenger Airlines",
+      "Casinos & Gaming",
+      "Leisure Products",
+      "Hotel & Resort REITs"
+    ]
+  },
+  {
+    "label": "Consumer cyclicals",
+    "sectors": [
+      "Consumer Discretionary"
+    ],
+    "subs": [
+      "Passenger Airlines",
+      "Homebuilding"
+    ]
   }
 ]

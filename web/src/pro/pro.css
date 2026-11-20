@@ -2,7 +2,8 @@
 .pro-root {
   --pro-div-0: #b8461c; /* most divergent (0–1 shared neighbours) */
   --pro-div-1: #ec9a6e;
-  --pro-div-2: var(--point); /* consistent: fades to the neutral point colour */
+  --pro-point: #bdbcb7; /* neutral dots: a touch darker than v1's so they read at 100% zoom */
+  --pro-div-2: var(--pro-point); /* consistent: fades to the neutral point colour */
   --pro-line-a: #2a78d6; /* pair chart series 1 */
   --pro-line-b: #eb6834; /* pair chart series 2 */
 }
@@ -10,6 +11,7 @@
   .pro-root {
     --pro-div-0: #ff9b5e; /* brightest on dark */
     --pro-div-1: #b0572c;
+    --pro-point: #6d6c66; /* lighter than v1's #4f4e4a on the dark surface */
     --pro-line-a: #3987e5;
     --pro-line-b: #d95926;
   }

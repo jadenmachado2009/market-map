@@ -62,3 +62,56 @@ test("rolling correlation and rebase", () => {
   close(pearson([1, 2, 3], [3, 2, 1]), -1);
   rebase([50, 55, 45]).forEach((v, i) => close(v, [100, 110, 90][i]));
 });
+
+// ---------------------------------------------------------------- v2.1
+import { neffCov, riskContrib, portfolioVar, hedge, hedgeUnstable, formatNum } from "../src/pro/lib/math.ts";
+
+test("N_eff (covariance): n uncorrelated assets, equal vol, equal weights -> n", () => {
+  for (const n of [2, 9, 15]) {
+    const v = 0.02 ** 2;
+    close(neffCov(n, (i, j) => (i === j ? v : 0), new Array(n).fill(1 / n)), n);
+  }
+});
+
+test("N_eff (covariance): all pairs perfectly correlated -> 1", () => {
+  const sd = [0.01, 0.02, 0.03, 0.015, 0.025];
+  close(neffCov(5, (i, j) => sd[i] * sd[j], [0.3, 0.2, 0.2, 0.15, 0.15]), 1);
+});
+
+test("N_eff (covariance): volatility matters (a dominant holding cuts the count)", () => {
+  // two uncorrelated holdings, equal weight, one twice as volatile -> 1 < N_eff < 2
+  const sd = [0.01, 0.02];
+  const n2 = neffCov(2, (i, j) => (i === j ? sd[i] ** 2 : 0), [0.5, 0.5]);
+  close(n2, (1 + 4) ** 2 / (1 + 16)); // tr² / ||M||²: (1 + 4)² / (1² + 4²)
+  assert.ok(n2 < 2 && n2 > 1);
+});
+
+test("risk contributions sum to 1 and match the closed form", () => {
+  const C = [[4, 1, 0.5], [1, 9, 2], [0.5, 2, 16]].map((r) => r.map((x) => x / 1e4));
+  const w = [0.5, 0.3, 0.2];
+  const rc = riskContrib(3, (i, j) => C[i][j], w);
+  close(rc.reduce((a, b) => a + b, 0), 1);
+  const tot = portfolioVar(3, (i, j) => C[i][j], w);
+  close(rc[0], (w[0] * (C[0][0] * w[0] + C[0][1] * w[1] + C[0][2] * w[2])) / tot);
+  riskContrib(4, (i, j) => (i === j ? 1 : 0), [0.25, 0.25, 0.25, 0.25]).forEach((x) => close(x, 0.25));
+});
+
+test("hedge ratio = Cov/Var(h), variance cut = rho^2, and the stability flag", () => {
+  const h = hedge(0.74, 0.024, 0.02); // rho 0.74, sd_s 2.4%, sd_h 2.0%
+  close(h.beta, 0.74 * 1.2);
+  close(h.varCut, 0.5476);
+  assert.equal(hedgeUnstable(1.0, 1.4), false);
+  assert.equal(hedgeUnstable(1.0, 1.6), true);   // moved more than 50%
+  assert.equal(hedgeUnstable(0.3, -0.1), true);  // sign flip
+  assert.equal(hedgeUnstable(1.0, NaN), true);
+});
+
+test("sign formatting: round first, no '−0.00', '+' only for positives when asked", () => {
+  assert.equal(formatNum(-0.0004), "0.00");
+  assert.equal(formatNum(-0.004, 2, true), "0.00");
+  assert.equal(formatNum(0.004, 2, true), "0.00");
+  assert.equal(formatNum(-0.006), "−0.01");
+  assert.equal(formatNum(0.25, 2, true), "+0.25");
+  assert.equal(formatNum(-1.234, 1), "−1.2");
+  assert.equal(formatNum(NaN), "–");
+});

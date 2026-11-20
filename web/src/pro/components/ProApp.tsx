@@ -16,8 +16,8 @@ const STORE = "market-map-pro:portfolio";
 const DEFAULT_PIN = "KKR";
 const FACTOR_TEXT: Record<PresetId, string> = {
   mkt: "the market (SPY)",
-  mkt_rates: "the market and rates (SPY, TLT)",
-  full: "market, rates, size and value (SPY, TLT, IWM, IWD, IWF)",
+  rates_def: "the market, rates and defensives (SPY, TLT, USMV − SPY)",
+  full: "market, rates, defensives, size and value (SPY, TLT, USMV − SPY, IWM, IWD, IWF)",
 };
 
 export default function ProApp({ data }: { data: ProData }) {
@@ -40,6 +40,7 @@ export default function ProApp({ data }: { data: ProData }) {
   const [pfText, setPfText] = useState("");
   const [mats, setMats] = useState<Partial<Record<PresetId, PairMatrix>>>({});
   const [raw, setRaw] = useState<{ get: (i: number, j: number) => number } | null>(null);
+  const [raw1, setRaw1] = useState<{ get: (i: number, j: number) => number } | null>(null);
 
   const pf = useMemo(() => {
     const p = parsePortfolio(pfText, known);
@@ -98,14 +99,24 @@ export default function ProApp({ data }: { data: ProData }) {
       live = false;
     };
   }, [needMatrix, preset, mats, N]);
+  // Total-return correlations: 2 years for the X-ray and hedges, last year for hedge stability.
   useEffect(() => {
-    if (!pf.holdings.length || raw) return;
+    if (!needMatrix || raw) return;
     let live = true;
-    loadRawCorr(N).then((get) => live && setRaw({ get })).catch(() => {});
+    loadRawCorr(N, "2y").then((get) => live && setRaw({ get })).catch(() => {});
     return () => {
       live = false;
     };
-  }, [pf.holdings.length, raw, N]);
+  }, [needMatrix, raw, N]);
+  const needRaw1 = focus.s?.kind === "stock";
+  useEffect(() => {
+    if (!needRaw1 || raw1) return;
+    let live = true;
+    loadRawCorr(N, "1y").then((get) => live && setRaw1({ get })).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [needRaw1, raw1, N]);
 
   const P = data.data[preset];
   const matrix = mats[preset] ?? null;
@@ -122,7 +133,7 @@ export default function ProApp({ data }: { data: ProData }) {
     const ids = assets.map((_, i) => i);
     if (mode === "sector") {
       const on = assets.map((a) => a.sector === sector);
-      return { fills: on.map((x) => (x ? "var(--accent)" : "var(--point)")), order: ids.sort((a, b) => Number(on[a]) - Number(on[b])), counts: [] };
+      return { fills: on.map((x) => (x ? "var(--accent)" : "var(--pro-point)")), order: ids.sort((a, b) => Number(on[a]) - Number(on[b])), counts: [] };
     }
     if (mode === "beta") {
       const bi = assets.map((a) => betaBin(a.beta));
@@ -133,13 +144,16 @@ export default function ProApp({ data }: { data: ProData }) {
       };
     }
     const bi = assets.map((_, i) => divergenceBin(P.overlap[i]));
+    // Draw order uses the Market preset's bins so it doesn't change when the preset does:
+    // a DOM node that React moves can't animate, and dots must glide between presets.
+    const bm = assets.map((_, i) => divergenceBin(data.data.mkt.overlap[i]));
     const rank = (b: number) => (b === -1 ? 3 : b);
     return {
-      fills: bi.map((b) => (b === -1 ? "var(--point)" : DIVERGENCE_BINS[b].color)),
-      order: ids.sort((a, b) => rank(bi[b]) - rank(bi[a])),
+      fills: bi.map((b) => (b === -1 ? "var(--pro-point)" : DIVERGENCE_BINS[b].color)),
+      order: ids.sort((a, b) => rank(bm[b]) - rank(bm[a])),
       counts: DIVERGENCE_BINS.map((_, k) => bi.filter((x) => x === k).length),
     };
-  }, [mode, sector, assets, P]);
+  }, [mode, sector, assets, P, data]);
 
   const s = focus.s;
   const sel = s?.kind === "stock" ? s.i : null;
@@ -176,7 +190,12 @@ export default function ProApp({ data }: { data: ProData }) {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <label className="flex items-center gap-2 text-xs text-ink-3">
             Remove
-            <Segmented label="Factor preset" value={preset} onChange={setPreset}
+            <Segmented label="Factor preset" value={preset}
+              onChange={(v) => {
+                if (v === preset) return;
+                setPreset(v);
+                setMorph((m) => m + 1); // dots glide to the aligned layout; lines wait for them
+              }}
               options={data.presets.map((p) => ({ value: p.id, label: p.label }))} />
           </label>
           <label className="flex items-center gap-2 text-xs text-ink-3">
@@ -198,6 +217,9 @@ export default function ProApp({ data }: { data: ProData }) {
         </div>
         <div className="mt-2">
           <FilterBar filters={filters} onChange={setFilters} shown={visible.filter((v, i) => v && (view === "beh" || P.biz[i] !== null)).length} total={N} />
+          {presetMeta.notPlotted.length > 0 && (
+            <p className="mt-1 text-xs text-ink-3">{presetMeta.notPlotted.join(", ")} used as factors, so not plotted.</p>
+          )}
         </div>
         <p className="mt-2 text-sm text-ink-2">
           {view === "beh"
@@ -207,7 +229,6 @@ export default function ProApp({ data }: { data: ProData }) {
 
         <div className="mx-auto mt-1" style={{ maxWidth: "min(100%, max(360px, calc(100svh - 260px)))" }}>
           <ProMap
-            key={preset}
             assets={assets}
             view={view}
             beh={P.beh}
@@ -241,9 +262,10 @@ export default function ProApp({ data }: { data: ProData }) {
           pf={pf}
           onText={setPortfolio}
           assets={assets}
-          presetLabel={presetMeta.label}
+          factorText={FACTOR_TEXT[preset]}
           matrix={matrix}
           rawCorr={raw?.get ?? null}
+          sdRes={P.sdRes}
           clusterIds={P.clusters.beh.ids}
           clusterLabels={P.clusters.beh.labels}
           onPickPair={pickPair}
@@ -264,6 +286,8 @@ export default function ProApp({ data }: { data: ProData }) {
             nnBiz={data.nnBiz[sel]}
             firstYear={data.years[0]}
             matrix={matrix}
+            raw2={raw?.get ?? null}
+            raw1={raw1?.get ?? null}
             assets={assets}
             passes={ok}
             onPick={pickTicker}
@@ -280,6 +304,7 @@ export default function ProApp({ data }: { data: ProData }) {
           hidden={P.hidden}
           apart={P.apart}
           decouple={P.decouple}
+          tested={P.decoupleTested}
           ok={(t) => index.has(t) && ok(index.get(t)!)}
           active={pair ? { a: assets[pair[0]].t, b: assets[pair[1]].t } : null}
           onPick={(a, b) => pickPair(index.get(a)!, index.get(b)!)}

@@ -101,3 +101,66 @@ export function rebase(prices: ArrayLike<number>): number[] {
   for (let i = 0; i < prices.length && !Number.isFinite(base); i++) if (Number.isFinite(prices[i])) base = prices[i];
   return Array.from(prices, (p) => (p / base) * 100);
 }
+
+// ---------------------------------------------------------------- v2.1: covariance, risk, hedges
+
+/**
+ * N_eff on covariance: eigenvalues λ of M = diag(w) Σ diag(w); (Σλ)² / Σλ² = tr(M)² / ||M||²_F.
+ * `cov(i, j)` is the covariance of holdings i and j (daily returns).
+ */
+export function neffCov(n: number, cov: (i: number, j: number) => number, w: number[]): number {
+  let tr = 0, fro = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const m = w[i] * w[j] * cov(i, j);
+      fro += m * m;
+      if (i === j) tr += m;
+    }
+  }
+  return fro > 0 ? (tr * tr) / fro : NaN;
+}
+
+/** Portfolio variance wᵀΣw. */
+export function portfolioVar(n: number, cov: (i: number, j: number) => number, w: number[]): number {
+  let v = 0;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) v += w[i] * w[j] * cov(i, j);
+  return v;
+}
+
+/** Risk contribution RC_i = w_i (Σw)_i / wᵀΣw. Sums to 1. */
+export function riskContrib(n: number, cov: (i: number, j: number) => number, w: number[]): number[] {
+  const sw = Array.from({ length: n }, (_, i) => {
+    let s = 0;
+    for (let j = 0; j < n; j++) s += cov(i, j) * w[j];
+    return s;
+  });
+  const total = w.reduce((acc, wi, i) => acc + wi * sw[i], 0);
+  return w.map((wi, i) => (wi * sw[i]) / total);
+}
+
+/**
+ * Minimum-variance hedge of s with h: β = Cov(s, h) / Var(h) = ρ σ_s / σ_h.
+ * Hedging with β removes ρ² of s's variance.
+ */
+export function hedge(rho: number, sdS: number, sdH: number): { beta: number; varCut: number } {
+  return { beta: (rho * sdS) / sdH, varCut: rho * rho };
+}
+
+/** A hedge is unstable if the 1-year ratio flips sign or moves more than 50% from the 2-year one. */
+export function hedgeUnstable(beta2y: number, beta1y: number): boolean {
+  if (!Number.isFinite(beta1y)) return true;
+  return Math.sign(beta1y) !== Math.sign(beta2y) || Math.abs(beta1y - beta2y) > 0.5 * Math.abs(beta2y);
+}
+
+/**
+ * Fixed-decimal number with a proper minus sign. Rounds first, so tiny values never show as
+ * "−0.00": exact zero is "0.00" with no sign. `signed` adds "+" to positive values.
+ */
+export function formatNum(v: number, digits = 2, signed = false): string {
+  if (!Number.isFinite(v)) return "–";
+  const f = 10 ** digits;
+  const r = Math.round(v * f) / f;
+  if (r === 0) return (0).toFixed(digits);
+  const s = Math.abs(r).toFixed(digits);
+  return r < 0 ? "−" + s : (signed ? "+" : "") + s;
+}

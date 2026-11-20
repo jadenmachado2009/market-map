@@ -48,7 +48,7 @@ export function Legend({ title, note, bins, counts, extra }: { title: string; no
 
 export const DiamondKey = () => (
   <span className="inline-flex items-center gap-1.5">
-    <svg width="10" height="10" aria-hidden="true"><path d="M5 0L10 5L5 10L0 5Z" fill="var(--point)" /></svg>
+    <svg width="10" height="10" aria-hidden="true"><path d="M5 0L10 5L5 10L0 5Z" fill="var(--pro-point)" /></svg>
     ETFs, FX, commodities, bonds, crypto (behaviour map only)
   </span>
 );

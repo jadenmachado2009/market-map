@@ -1,5 +1,6 @@
 // Colour bins for Market Map Pro (copied from v1's scales.ts and changed).
 import type { Asset, AssetClass, Filters } from "./types";
+import { formatNum } from "./math";
 
 export type Bin = { label: string; color: string };
 
@@ -57,8 +58,8 @@ export const activeFilterCount = (f: Filters) =>
   (f.advMin > 0 ? 1 : 0) +
   (Object.values(f.classes).some((v) => !v) ? 1 : 0);
 
-export const fmt = (v: number, d = 2, signed = false) =>
-  Number.isFinite(v) ? (signed && v > 0 ? "+" : "") + v.toFixed(d).replace("-", "−") : "–";
+/** Rounds before choosing a sign, so a tiny negative never shows as "−0.00" (see formatNum). */
+export const fmt = (v: number, d = 2, signed = false) => formatNum(v, d, signed);
 
 export const money = (bn: number | null) =>
   bn === null ? "–" : bn >= 1000 ? `$${(bn / 1000).toFixed(2)}T` : bn >= 10 ? `$${bn.toFixed(0)}B` : `$${bn.toFixed(1)}B`;

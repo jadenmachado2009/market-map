@@ -53,8 +53,15 @@ export default function ProPage() {
           <div className="space-y-2">
             <h3 className="font-medium text-ink">Business similarity</h3>
             <p>
-              Company descriptions ({data.textSource === "edgar" ? "Item 1 of the latest 10-K, from SEC EDGAR" : "Yahoo Finance business summaries"})
-              are embedded with a small local model, after removing names, boilerplate and the average description.
+              {data.textSource === "edgar" ? (
+                <>
+                  Source: Item 1 (Business) of each company&apos;s latest SEC 10-K, up to about 3,000 words
+                  {data.textFallback.length > 0 && ` (${data.textFallback.length} companies fell back to Yahoo summaries)`}.
+                </>
+              ) : (
+                <>Source: Yahoo Finance business summaries for now. The pipeline reads SEC 10-K Item 1 once its SEC contact is configured.</>
+              )}{" "}
+              Descriptions are embedded with a small local model, after removing names, boilerplate and the average description.
               It&apos;s shown as a percentile (pctl): 99 pctl means more similar than 99% of stock pairs.
             </p>
           </div>

@@ -1,13 +1,13 @@
-# Market Map Pro (v2)
+# Market Map Pro (v2.1)
 
 v1 answers "which stocks are near each other". Pro answers "what is my portfolio really betting on, and what hedges it?" It lives at `/pro`, next to v1, which is unchanged (see "v1 protection" below).
 
 ## What's in it
-- **Portfolio X-ray:** paste `NVDA 20, MSFT 15, JPM 10` (weights optional) to get the effective number of independent bets N_eff = (Σλ)² / Σλ², for the eigenvalues of W^½ C W^½. It is computed as (Σw)² / Σᵢⱼ wᵢwⱼCᵢⱼ², which is the same quantity without an eigen-decomposition. You also get holdings grouped by cluster, pairs at a residual correlation of 0.5 or more, and the total-return version. Everything runs client-side; the portfolio is saved to localStorage only.
-- **Factor presets:** residuals after SPY, after SPY + TLT, or after SPY + TLT + IWM + IWD + IWF. Each preset has its own layout, lists, clusters and risk-card exposures.
-- **Risk card:** market cap, volatility, beta, and factor exposures. "Trades with" includes years held; "Reads like" is shown as a percentile. Then the hedge finder.
+- **Portfolio X-ray:** paste `NVDA 20, MSFT 15, JPM 10` (weights optional). The headline is the effective number of independent bets on the **covariance** of daily total returns (2 years, winsorised): N_eff = (Σλ)² / Σλ² for the eigenvalues of M = diag(w) Σ diag(w), computed as tr(M)² / ‖M‖²_F. The second line is the same on the active preset's residual covariance. Then portfolio volatility and beta, "% of capital vs % of risk" by cluster (risk share RCᵢ = wᵢ(Σw)ᵢ / wᵀΣw, sorted by risk, with clusters 10+ points risk-heavy flagged), and pairs at a residual correlation of 0.5 or more. Everything runs client-side; the portfolio is saved to localStorage only.
+- **Factor presets:** Market (SPY); + Rates & defensives (SPY, TLT, USMV − SPY); + Rates, defensives, size, value (SPY, TLT, USMV − SPY, IWM, IWD, IWF). Factor instruments are not plotted. The other presets reuse the Market positions and only move stocks whose neighbourhood changes, so switching presets moves 15–27 dots, not all of them.
+- **Risk card:** market cap, volatility, beta, and every factor exposure for the preset. "Trades with" includes years held; "Reads like" is shown as a percentile. **Best hedges** are on total returns: hedge ratio β = Cov / Var, variance removed = ρ², flagged "unstable" if the 1-year ratio flips sign or moves more than 50%. A "Residual view" toggle keeps the old residual-correlation lists.
 - **Pair view:** prices rebased to 100, a rolling 60-day residual correlation against the dashed long-run level, plus stability, similarity percentile and betas.
-- **Lists:** Hidden twins, Lookalikes, Decoupling now. Pairs involving equity ETFs are excluded.
+- **Lists:** Hidden twins and Lookalikes keep only pairs that held a correlation of 0.3+ in at least 6 of 11 calendar years (or 60% of a shorter history and at least 4 years), each tagged with a theme from `pair_themes_v2.json`. Decoupling tests durable pairs (long-run ≥ 0.5, held 7+ of 11 years) with a one-sided Fisher z on the last 60 days and Benjamini–Hochberg at q = 0.05. The build log prints how many pairs were tested and how many passed. Equity ETFs and share-class pairs (same SEC CIK, e.g. GOOG/GOOGL) are excluded.
 - **Cross-asset universe:** sector ETFs, QQQ/IWM/EFA/EEM, FX, gold/silver/oil, Treasuries/HY and BTC/ETH. These appear as diamonds, on the behaviour map only.
 - **Filters:** market cap (stocks), 1-year volatility, 3-month dollar volume and asset class.
 
@@ -24,7 +24,8 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 | Path | What |
 |---|---|
 | `pipeline_v2.py` | the whole data build; the maths is in small pure functions at the top |
-| `cluster_labels_v2.json` | manual cluster names, matched by member tickers / sectors / sub-industries |
+| `cluster_labels_v2.json` | manual cluster names by economic theme, matched by member tickers / sectors / sub-industries (the cluster takes the best match covering 50%+ of it) |
+| `pair_themes_v2.json` | theme tags for pair lists: sub-industry rules plus per-pair overrides |
 | `tests_v2/` | Python tests |
 | `requirements_v2.txt` | pipeline dependencies |
 | `.github/workflows/pro-nightly.yml` | nightly rebuild + Vercel deploy (01:30 UTC Tue–Sat, or run it by hand from the Actions tab) |
@@ -37,13 +38,20 @@ Business text comes from **SEC EDGAR 10-K Item 1** when `SEC_USER_AGENT` is set 
 
 ## Nightly rebuild: setup still needed
 1. The workflow is active on `main`. To edit it, use GitHub's web editor: the local git token used so far lacks the `workflow` scope, so pushes that change `.github/workflows/` are rejected.
-2. Add repository secrets: `SEC_USER_AGENT`, plus `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` for the deploy step. Without the Vercel secrets the job still builds and tests, but skips deploying.
+2. Add these repository secrets (GitHub → Settings → Secrets and variables → Actions):
+   - `SEC_USER_AGENT`: `Market Map <your email>`. SEC requires a reachable contact on every request. Without it, business text stays on Yahoo.
+   - `VERCEL_TOKEN`: create one at vercel.com/account/tokens.
+   - `VERCEL_ORG_ID`: your Vercel team ID (Team Settings → General → Team ID), or the `orgId` in `.vercel/project.json` after `vercel link`.
+   - `VERCEL_PROJECT_ID`: the market-map project's ID (Project → Settings → General → Project ID), or the `projectId` in `.vercel/project.json`.
+
+   Without the Vercel secrets the job still builds and tests, but skips deploying.
 
 Data isn't committed nightly (≈7 MB of binaries a night would bloat git). Each run deploys fresh data straight to Vercel. A normal `git push` deploys whatever data was last committed.
 
 ## Choices that differ from the brief, and why
-- **Factor exposures for "+ Rates, size, value"** are shown as Market, Rates, Size (IWM−SPY) and Value (IWD−IWF). SPY, IWM, IWD and IWF are nearly collinear, so their raw betas are unreadable. The residuals come from the full five-ETF fit exactly as specified; only the displayed betas are re-expressed, and that re-expression is exact.
-- **Cluster auto-labels** use the most common sub-industry only when it covers at least 40% of the cluster. Otherwise they use the dominant sector, or "Mixed: A / B". Without this, an 85-stock tech/communications cluster was labelled "Application Software".
+- **The factor regression uses a spread basis:** Market, Rates (TLT), Defensive (USMV − SPY), Size (IWM − SPY), Value (IWD − IWF) and Large-cap tilt ((IWD + IWF)/2 − SPY). It spans exactly the same space as the instruments, so the residuals are identical (tested). Raw collinear ETF betas would be unreadable, and all six betas are shown.
+- **Preset layouts are anchored, not re-run.** A fresh UMAP per preset, even seeded from Market and Procrustes-aligned, moved ~96% of dots (median 0.19 of the map) without improving how well the map shows each preset's neighbours (0.52–0.53 either way). Now a stock keeps its Market position unless it shares fewer than 5 of its top-10 neighbours; then it moves to the median of its new neighbours.
+- **Cluster labels:** manual theme names cover the 20 biggest clusters of every behaviour layout. Unnamed clusters use their dominant sub-industry or sector, never "Mixed". Same-sector clusters whose nearest members are within 0.05 are merged first.
 - **Equity ETFs are left out of the pair lists.** Their links to their own holdings are mechanical: the first decoupling list was all NFLX–QQQ, AAPL–XLK and similar. They stay on the map and in the hedge finder.
 - **Hedge finder "lowest" reads as "closest to zero"**, so it's a separate list from "most negative".
 - **Factor ETFs drop out of presets that use them** (TLT under "+ Rates"; TLT and IWM under the full preset): their residual is zero by construction.

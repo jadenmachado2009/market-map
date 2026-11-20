@@ -1,8 +1,13 @@
 "use client";
 
+import { useState } from "react";
 import type { Asset, NnBeh, NnBiz } from "../lib/types";
 import type { PairMatrix } from "../lib/lazy";
+import { hedge, hedgeUnstable } from "../lib/math";
 import { fmt, money, pctLabel } from "../lib/scales";
+
+const LIQUID_ADV = 20; // $m a day: hedges must be easy to trade
+type Corr = ((i: number, j: number) => number) | null;
 
 const Card = ({ children }: { children: React.ReactNode }) => (
   <section className="rounded-lg border border-line bg-surface-2/60 p-4">{children}</section>
@@ -15,7 +20,7 @@ const Tick = ({ t, onPick, strong }: { t: string; onPick: (t: string) => void; s
   </button>
 );
 
-export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, firstYear, matrix, assets, passes, onPick, onPickPair, onClose }: {
+export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
   i: number;
   a: Asset;
   presetLabel: string;
@@ -25,6 +30,8 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
   nnBiz: NnBiz[] | null;
   firstYear: number;
   matrix: PairMatrix | null;
+  raw2: Corr;
+  raw1: Corr;
   assets: Asset[];
   passes: (j: number) => boolean;
   onPick: (t: string) => void;
@@ -107,7 +114,7 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
         Bold: in both lists. Years held = calendar years since {firstYear} where the correlation was 0.3 or more.
       </p>
 
-      <HedgeFinder i={i} matrix={matrix} assets={assets} passes={passes} onPickPair={onPickPair} />
+      <HedgeFinder i={i} matrix={matrix} raw2={raw2} raw1={raw1} assets={assets} passes={passes} onPickPair={onPickPair} />
     </Card>
   );
 }
@@ -147,25 +154,80 @@ function ExposureBar({ name, v }: { name: string; v: number }) {
   );
 }
 
-function HedgeFinder({ i, matrix, assets, passes, onPickPair }: {
-  i: number; matrix: PairMatrix | null; assets: Asset[]; passes: (j: number) => boolean; onPickPair: (j: number) => void;
+function HedgeFinder({ i, matrix, raw2, raw1, assets, passes, onPickPair }: {
+  i: number; matrix: PairMatrix | null; raw2: Corr; raw1: Corr; assets: Asset[]; passes: (j: number) => boolean; onPickPair: (j: number) => void;
 }) {
-  if (!matrix) return <p className="mt-4 text-xs text-ink-3">Loading hedge finder…</p>;
-  const row = matrix.row(i);
-  const cand: number[] = [];
-  for (let j = 0; j < row.length; j++) if (j !== i && Number.isFinite(row[j]) && passes(j)) cand.push(j);
-  const least = [...cand].sort((x, y) => Math.abs(row[x]) - Math.abs(row[y])).slice(0, 5);
-  const neg = [...cand].sort((x, y) => row[x] - row[y]).filter((j) => row[j] < 0).slice(0, 5);
+  const [residual, setResidual] = useState(false);
+  const toggle = (
+    <button type="button" onClick={() => setResidual(!residual)} aria-pressed={residual}
+      className="rounded border border-line px-1.5 py-0.5 text-[11px] text-ink-3 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent">
+      {residual ? "Best hedges" : "Residual view"}
+    </button>
+  );
+  const head = (title: string, note: string) => (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-medium text-ink-2">{title}</h3>
+        {toggle}
+      </div>
+      <p className="mt-0.5 text-[11px] text-ink-3">{note}</p>
+    </>
+  );
+
+  if (residual) {
+    if (!matrix) return <div className="mt-4 border-t border-line pt-3">{head("Residual view", "Loading…")}</div>;
+    const row = matrix.row(i);
+    const cand: number[] = [];
+    for (let j = 0; j < row.length; j++) if (j !== i && Number.isFinite(row[j]) && passes(j)) cand.push(j);
+    const least = [...cand].sort((x, y) => Math.abs(row[x]) - Math.abs(row[y])).slice(0, 5);
+    const neg = [...cand].sort((x, y) => row[x] - row[y]).filter((j) => row[j] < 0).slice(0, 5);
+    return (
+      <div className="mt-4 border-t border-line pt-3">
+        {head("Residual view", "Correlation after removing the preset's factors. For research, not for sizing a hedge.")}
+        <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
+          <HedgeCol title="Least related" hint="Correlation closest to zero" ids={least} row={row} assets={assets} onPickPair={onPickPair} />
+          <HedgeCol title="Most negative" hint="Lowest (most negative) correlation" ids={neg} row={row} assets={assets} onPickPair={onPickPair} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!raw2 || !raw1) return <div className="mt-4 border-t border-line pt-3">{head("Best hedges", "Loading…")}</div>;
+  const s = assets[i];
+  const rows: { j: number; beta: number; varCut: number; beta1: number; unstable: boolean }[] = [];
+  for (let j = 0; j < assets.length; j++) {
+    const hA = assets[j];
+    if (j === i || !passes(j) || (hA.adv ?? 0) < LIQUID_ADV || !hA.sd || !s.sd) continue;
+    const rho = raw2(i, j);
+    if (!Number.isFinite(rho)) continue;
+    const { beta, varCut } = hedge(rho, s.sd, hA.sd);
+    const beta1 = s.sd1y && hA.sd1y ? hedge(raw1(i, j), s.sd1y, hA.sd1y).beta : NaN;
+    rows.push({ j, beta, varCut, beta1, unstable: hedgeUnstable(beta, beta1) });
+  }
+  rows.sort((x, y) => y.varCut - x.varCut);
   return (
     <div className="mt-4 border-t border-line pt-3">
-      <h3 className="text-xs font-medium text-ink-2">Hedge finder</h3>
-      <p className="mt-0.5 text-[11px] text-ink-3">
-        Residual correlation, so this hedges the part of the move the preset&apos;s factors don&apos;t explain. Respects the filters; ◆ = not a stock.
-      </p>
-      <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
-        <HedgeCol title="Least related" hint="Correlation closest to zero" ids={least} row={row} assets={assets} onPickPair={onPickPair} />
-        <HedgeCol title="Most negative" hint="Lowest (most negative) correlation" ids={neg} row={row} assets={assets} onPickPair={onPickPair} />
-      </div>
+      {head("Best hedges", "On daily total returns over 2 years: the hedge ratio β = Cov ÷ Var and the share of variance it removes (ρ²). Liquid assets that pass your filters; ◆ = not a stock.")}
+      <ol className="mt-2 space-y-1 text-sm">
+        {rows.slice(0, 5).map((r) => (
+          <li key={r.j} className="flex items-baseline justify-between gap-2 tabular-nums">
+            <button type="button" onClick={() => onPickPair(r.j)} title={assets[r.j].name}
+              className="text-left text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent">
+              {r.beta >= 0 ? "Short" : "Buy"} {fmt(Math.abs(r.beta))}× <span className="font-medium">{assets[r.j].t}</span>
+              {assets[r.j].cls !== "stock" && <span className="ml-1 text-[10px] text-ink-3">◆</span>}
+            </button>
+            <span className="flex items-baseline gap-2 text-ink-2">
+              variance −{Math.round(r.varCut * 100)}%
+              {r.unstable && (
+                <span className="rounded-full border border-line px-1.5 text-[10px] text-ink-2"
+                  title={`Last-year ratio ${fmt(r.beta1)} vs ${fmt(r.beta)} over 2 years: sign flipped or moved more than 50%`}>
+                  unstable
+                </span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

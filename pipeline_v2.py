@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
-"""Market Map Pro (v2) data pipeline.
+"""Market Map Pro (v2.1) data pipeline.
 
-Builds everything the /pro route needs: three factor presets, winsorised residual
-correlations, yearly stability counts, a decoupling list, business-text similarity
-(EDGAR 10-K Item 1 when SEC_USER_AGENT is set, Yahoo summaries otherwise), a
-cross-asset universe, HDBSCAN clusters, and compact lazy-loaded binaries.
+Builds everything the /pro route needs: three factor presets (market; + rates & defensives;
++ size & value), winsorised residual correlations, yearly stability counts, stable pair lists
+with theme tags, a Fisher-z / Benjamini-Hochberg decoupling list, business-text similarity
+(SEC 10-K Item 1 when SEC_USER_AGENT is set, Yahoo summaries otherwise), a cross-asset universe,
+HDBSCAN clusters, covariance inputs for the portfolio X-ray and hedge finder, and compact
+lazy-loaded binaries.
 
 Usage:
     python pipeline_v2.py                  # full run
     python pipeline_v2.py --cached-prices  # reuse pro_cache/prices.pkl (fast reruns)
 
 Env:
-    SEC_USER_AGENT  "Name contact@email" as required by SEC fair access. Without it,
-                    business text falls back to Yahoo summaries.
+    SEC_USER_AGENT  "Market Map you@example.com" as SEC fair access requires. Without it,
+                    business text falls back to Yahoo summaries (and the log says so).
 
-The math lives in small pure-numpy functions at the top (tested in tests_v2/).
+The maths lives in small pure-numpy functions at the top (tested in tests_v2/).
 """
 from __future__ import annotations
 
 import argparse
 import gzip
 import json
+import math
 import os
 import re
 import sys
 import time
 import warnings
+from collections import Counter
 from io import StringIO
 from pathlib import Path
 
@@ -36,28 +40,42 @@ CACHE = ROOT / "pro_cache"
 OUT_JSON = ROOT / "web" / "src" / "data-pro" / "market_map_v2.json"
 OUT_BIN = ROOT / "web" / "public" / "pro-data"
 LABELS_FILE = ROOT / "cluster_labels_v2.json"
+THEMES_FILE = ROOT / "pair_themes_v2.json"
 
 SEED = 42
 START = "2016-01-01"
 MAP_DAYS = 504          # 2 trading years, same window as v1
+YEAR_DAYS = 252
 RECENT_DAYS = 60
 WINSOR_K = 5.0
-HOLD_THR = 0.3          # a yearly window "holds" if residual corr >= 0.3
-STABLE_MIN = 5          # decoupling candidates must have held in >= 5 windows
-DECOUPLE_DROP = 0.3
+HOLD_THR = 0.3          # a calendar year "holds" if residual corr >= 0.3
 TOP_Q = 0.99
 N_LIST = 25
 K_OVERLAP = 10
+ITEM1_WORDS = 3000
+DECOUPLE_MIN_LR = 0.5   # decoupling: only pairs with a long-run residual corr of 0.5+ ...
+DECOUPLE_HELD = 7 / 11  # ... that held in at least 7 of 11 calendar years
+FDR_Q = 0.05
+CLUSTER_MERGE_EPS = 0.05  # merge same-sector clusters whose nearest members are this close
 
-FACTORS = {
+# Factor instruments per preset, and the regression basis that spans exactly the same space
+# but gives readable betas (spreads instead of collinear ETFs).
+FACTOR_INSTRUMENTS = {
     "mkt": ["SPY"],
-    "mkt_rates": ["SPY", "TLT"],
-    "full": ["SPY", "TLT", "IWM", "IWD", "IWF"],
+    "rates_def": ["SPY", "TLT", "USMV"],
+    "full": ["SPY", "TLT", "USMV", "IWM", "IWD", "IWF"],
 }
-PRESET_LABEL = {"mkt": "Market", "mkt_rates": "+ Rates", "full": "+ Rates, size, value"}
-# Exposures shown on the risk card. For "full" the five ETFs are re-expressed as
-# market / rates / size (IWM-SPY) / value (IWD-IWF): same fit, readable betas.
-EXPOSURE_NAMES = {"mkt": ["Market"], "mkt_rates": ["Market", "Rates"], "full": ["Market", "Rates", "Size", "Value"]}
+FACTOR_COLS = {
+    "mkt": ["MKT"],
+    "rates_def": ["MKT", "RATES", "DEF"],
+    "full": ["MKT", "RATES", "DEF", "SIZE", "VALUE", "TILT"],
+}
+EXPOSURE_NAMES = {
+    "mkt": ["Market"],
+    "rates_def": ["Market", "Rates", "Defensive"],
+    "full": ["Market", "Rates", "Defensive", "Size", "Value", "Large-cap tilt"],
+}
+PRESET_LABEL = {"mkt": "Market", "rates_def": "+ Rates & defensives", "full": "+ Rates, defensives, size, value"}
 
 CROSS = {
     "etf": ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "QQQ", "IWM", "EFA", "EEM"],
@@ -82,7 +100,7 @@ CROSS_NAMES = {
 CLASS_LABEL = {"etf": "Equity ETFs", "fx": "Currencies", "commodity": "Commodities", "bond": "Bonds", "crypto": "Crypto"}
 
 
-# ----------------------------------------------------------------------------- math
+# ----------------------------------------------------------------------------- maths
 
 def residualize(R: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """OLS of every column of R (T x N) on [1, F] (F is T x K).
@@ -122,16 +140,56 @@ def stability_counts(mats: list[np.ndarray], thr: float = HOLD_THR) -> tuple[np.
     return k, valid.sum(axis=0)
 
 
-def neff(C: np.ndarray, w: np.ndarray | None = None) -> float:
-    """Effective number of independent bets from eigenvalues of W^1/2 C W^1/2.
+def stable_pair(k, n, n_full: int):
+    """Hidden-twin / lookalike stability rule.
 
-    (sum lambda)^2 / sum lambda^2 = tr(M)^2 / ||M||_F^2, so no eigen-decomposition is needed.
+    Full history: held in at least 6 of 11 calendar years (scaled if there are more years).
+    Shorter history: held in at least 60% of the available years, and in at least 4 of them.
     """
+    k, n = np.asarray(k), np.asarray(n)
+    need_full = math.ceil(n_full * 6 / 11)
+    return np.where(n >= n_full, k >= need_full, (k >= np.ceil(0.6 * n)) & (k >= 4))
+
+
+def fisher_z(r_recent, r_longrun, n: int = RECENT_DAYS):
+    """Z = (atanh(r_recent) - atanh(r_longrun)) / (1 / sqrt(n - 3)). Negative = decoupled."""
+    clip = lambda r: np.clip(np.asarray(r, float), -0.999999, 0.999999)
+    return (np.arctanh(clip(r_recent)) - np.arctanh(clip(r_longrun))) * np.sqrt(n - 3)
+
+
+def bh_reject(p, q: float = FDR_Q):
+    """Benjamini-Hochberg. Returns (rejected mask, adjusted p-values) at false discovery rate q."""
+    p = np.asarray(p, float)
+    m = len(p)
+    if m == 0:
+        return np.zeros(0, bool), np.zeros(0)
+    order = np.argsort(p)
+    ranked = p[order] * m / np.arange(1, m + 1)
+    adj_sorted = np.minimum(np.minimum.accumulate(ranked[::-1])[::-1], 1.0)
+    adj = np.empty(m)
+    adj[order] = adj_sorted
+    return adj <= q, adj
+
+
+def neff(C: np.ndarray, w: np.ndarray | None = None) -> float:
+    """Old (v2.0) definition: eigenvalues of W^1/2 C W^1/2 for a correlation matrix C."""
     n = len(C)
     w = np.full(n, 1.0 / n) if w is None else np.asarray(w, float) / np.sum(w)
-    num = np.sum(w) ** 2
-    den = np.sum(np.outer(w, w) * C ** 2)
-    return float(num / den)
+    return float(np.sum(w) ** 2 / np.sum(np.outer(w, w) * C ** 2))
+
+
+def neff_cov(S: np.ndarray, w: np.ndarray) -> float:
+    """v2.1: eigenvalues λ of M = diag(w) Σ diag(w); N_eff = (Σλ)² / Σλ² = tr(M)² / ||M||_F²."""
+    w = np.asarray(w, float)
+    M = np.outer(w, w) * S
+    return float(np.trace(M) ** 2 / np.sum(M ** 2))
+
+
+def risk_contrib(S: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """RC_i = w_i (Σw)_i / wᵀΣw. Sums to 1."""
+    w = np.asarray(w, float)
+    Sw = S @ w
+    return w * Sw / (w @ Sw)
 
 
 def tri_index(i: int, j: int, n: int) -> int:
@@ -145,13 +203,18 @@ def upper(M: np.ndarray) -> np.ndarray:
     return M[np.triu_indices(len(M), 1)]
 
 
-def exposures(preset: str, betas: np.ndarray) -> np.ndarray:
-    """Risk-card exposures from raw factor betas (K x N) for a preset."""
-    if preset != "full":
-        return betas
-    spy, tlt, iwm, iwd, iwf = betas
-    # IWM = size + mkt, IWD = tilt + mkt + value/2, IWF = tilt + mkt - value/2
-    return np.vstack([spy + iwm + iwd + iwf, tlt, iwm, (iwd - iwf) / 2])
+def factor_returns(lr):
+    """Spread basis: same span as the instruments in FACTOR_INSTRUMENTS, readable betas."""
+    import pandas as pd
+
+    return pd.DataFrame({
+        "MKT": lr["SPY"],
+        "RATES": lr["TLT"],
+        "DEF": lr["USMV"] - lr["SPY"],
+        "SIZE": lr["IWM"] - lr["SPY"],
+        "VALUE": lr["IWD"] - lr["IWF"],
+        "TILT": (lr["IWD"] + lr["IWF"]) / 2 - lr["SPY"],
+    })
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -169,6 +232,10 @@ def q16(x: np.ndarray) -> np.ndarray:
 
 def r3(v) -> float:
     return round(float(v), 3)
+
+
+def sig5(v) -> float | None:
+    return None if v is None or not np.isfinite(v) else float(f"{float(v):.5g}")
 
 
 # ----------------------------------------------------------------------------- data
@@ -198,8 +265,11 @@ def download_prices(tickers: list[str], cached: bool):
 
     path = CACHE / "prices.pkl"
     if cached and path.exists():
-        log(f"prices: using cache {path.name}")
-        return pd.read_pickle(path)
+        data = pd.read_pickle(path)
+        if all(t in data["close"].columns for t in tickers):
+            log(f"prices: using cache {path.name}")
+            return data
+        log("prices: cache is missing tickers, downloading")
 
     def chunk(ts, tries=3):
         for k in range(tries):
@@ -277,12 +347,13 @@ def html_to_text(html: bytes) -> str:
     for el in doc.iter("p", "div", "tr", "br", "li", "h1", "h2", "h3", "h4", "td"):
         el.tail = ("\n" + el.tail) if el.tail else "\n"
     text = doc.text_content()
-    text = re.sub(r"[ \t ]+", " ", text)
+    text = re.sub(r"[ \t ]+", " ", text)
     return re.sub(r"\n\s*\n+", "\n", text)
 
 
-def extract_item1(text: str) -> str | None:
-    """Longest span between an 'Item 1. Business' heading and the next 'Item 1A. Risk Factors'."""
+def extract_item1(text: str, max_words: int = ITEM1_WORDS) -> str | None:
+    """Longest span between an 'Item 1. Business' heading and the next 'Item 1A. Risk Factors',
+    capped at max_words. None if nothing substantial is found (table-of-contents hits are short)."""
     best = ""
     ends = [m.start() for m in ITEM1A.finditer(text)]
     for m in ITEM1.finditer(text):
@@ -292,12 +363,12 @@ def extract_item1(text: str) -> str | None:
         span = text[m.end():nxt[0]]
         if len(span) > len(best):
             best = span
-    best = best.strip()
-    return best[:200_000] if len(best) >= 2000 else None
+    words = best.split()
+    return " ".join(words[:max_words]) if len(words) >= 300 else None
 
 
-def edgar_texts(meta: dict, stocks: list[str], ua: str) -> dict[str, str]:
-    """Item 1 of each company's latest 10-K, cached per accession number."""
+def edgar_texts(meta: dict, stocks: list[str], ua: str) -> tuple[dict[str, str], list[str]]:
+    """Item 1 of each company's latest 10-K, cached per accession number. Returns (texts, failed)."""
     d = CACHE / "edgar"
     d.mkdir(parents=True, exist_ok=True)
     http = Polite(ua)
@@ -328,8 +399,7 @@ def edgar_texts(meta: dict, stocks: list[str], ua: str) -> dict[str, str]:
             fails.append(t)
         if n % 50 == 0:
             log(f"  EDGAR {n}/{len(stocks)}")
-    log(f"EDGAR: Item 1 for {len(out)} companies, {len(fails)} fell back: {fails[:20]}{'…' if len(fails) > 20 else ''}")
-    return out
+    return out, fails
 
 
 def yahoo_texts(stocks: list[str]) -> dict[str, str]:
@@ -372,7 +442,7 @@ def clean_text(t: str, name: str) -> str:
     return t
 
 
-def embed(texts: list[str], words: int = 200, max_chunks: int = 40) -> np.ndarray:
+def embed(texts: list[str], words: int = 200, max_chunks: int = 20) -> np.ndarray:
     """Mean of chunk embeddings, so long Item 1 sections aren't cut at 256 tokens."""
     from sentence_transformers import SentenceTransformer
 
@@ -408,14 +478,15 @@ def shares_outstanding(ua: str) -> dict[int, float]:
     return {k: v[1] for k, v in out.items()}
 
 
-# ----------------------------------------------------------------------------- layout
+# ----------------------------------------------------------------------------- layout, clusters, themes
 
-def umap_layout(D=None, X=None):
+def umap_layout(D=None, X=None, init=None):
     import umap
 
     warnings.filterwarnings("ignore")
     if D is not None:
-        return umap.UMAP(metric="precomputed", n_neighbors=15, min_dist=0.1, random_state=SEED).fit_transform(D)
+        return umap.UMAP(metric="precomputed", n_neighbors=15, min_dist=0.1, random_state=SEED,
+                         init="spectral" if init is None else init).fit_transform(D)
     return umap.UMAP(metric="cosine", n_neighbors=15, min_dist=0.1, random_state=SEED).fit_transform(X)
 
 
@@ -424,43 +495,140 @@ def norm2d(a: np.ndarray) -> np.ndarray:
     return a / np.abs(a).max()
 
 
+def align_to(A: np.ndarray, B: np.ndarray, rows: np.ndarray) -> np.ndarray:
+    """Rotate/reflect and shift A so its `rows` best match B's (orthogonal Procrustes)."""
+    from scipy.linalg import orthogonal_procrustes
+
+    ma, mb = A[rows].mean(0), B[rows].mean(0)
+    R, _ = orthogonal_procrustes(A[rows] - ma, B[rows] - mb)
+    return (A - ma) @ R + mb
+
+
+def anchored_layout(base: np.ndarray, C_new: np.ndarray, C_base: np.ndarray, keep_new: np.ndarray,
+                    k: int = 10, keep_at: int = 5) -> tuple[np.ndarray, list[int]]:
+    """Positions for another preset that only move stocks whose neighbourhood really changed.
+
+    A stock that still shares at least `keep_at` of its top-k residual-correlation neighbours with
+    the base (Market) preset keeps its base position. Otherwise it moves to the median base position
+    of its new neighbours (plus a small deterministic offset so movers don't stack). Rows not in
+    `keep_new` (factor instruments) are NaN.
+    """
+    N = len(base)
+    pool = keep_new & ~np.isnan(base[:, 0])
+    Y = np.full_like(base, np.nan)
+    moved = []
+
+    def top(C, i):
+        r = C[i].copy()
+        r[i] = -np.inf
+        r[~pool | np.isnan(r)] = -np.inf
+        return set(np.argsort(-r)[:k])
+    for i in np.where(keep_new)[0]:
+        n_new = top(C_new, i)
+        if len(n_new & top(C_base, i)) >= keep_at:
+            Y[i] = base[i]
+        else:
+            ang = i * 2.39996                                  # golden angle
+            Y[i] = np.median(base[list(n_new)], axis=0) + 0.012 * np.array([np.cos(ang), np.sin(ang)])
+            moved.append(i)
+    return Y, moved
+
+
 def hdbscan_labels(Y: np.ndarray) -> np.ndarray:
     from sklearn.cluster import HDBSCAN
 
     return HDBSCAN(min_cluster_size=6, min_samples=3).fit_predict(Y)
 
 
-def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, overrides: list[dict]):
-    """Auto label = most common GICS sub-industry (or asset class); manual overrides by member overlap."""
-    from collections import Counter
+def merge_adjacent(ids: np.ndarray, Y: np.ndarray, sectors: list[str], eps: float = CLUSTER_MERGE_EPS) -> tuple[np.ndarray, list]:
+    """Merge clusters that share a top sector and whose closest members are within eps."""
+    from scipy.spatial.distance import cdist
 
+    cl = sorted(set(ids) - {-1})
+    top = {c: Counter(sectors[i] for i in np.where(ids == c)[0]).most_common(1)[0][0] for c in cl}
+    parent = {c: c for c in cl}
+
+    def find(c):
+        while parent[c] != c:
+            c = parent[c]
+        return c
+    merged = []
+    for a_i, a in enumerate(cl):
+        for b in cl[a_i + 1:]:
+            if top[a] != top[b] or find(a) == find(b):
+                continue
+            d = cdist(Y[ids == a], Y[ids == b]).min()
+            if d < eps:
+                parent[find(b)] = find(a)
+                merged.append((top[a], a, b, round(float(d), 3)))
+    return np.array([find(c) if c != -1 else -1 for c in ids]), merged
+
+
+def label_clusters(ids: np.ndarray, Y: np.ndarray, tick: list[str], meta: dict, overrides: list[dict]):
+    """Manual overrides first (best member overlap), else the dominant sub-industry or sector.
+    Never a 'Mixed' label: two-sector clusters are named 'A & B'."""
     out = []
     for c in sorted(set(ids) - {-1}):
         m = np.where(ids == c)[0]
         members = [tick[i] for i in m]
         subs = Counter(meta[t]["sub"] for t in members).most_common()
         secs = Counter(meta[t]["sector"] for t in members).most_common()
-        if subs[0][1] / len(members) >= 0.4:          # a sub-industry that covers the cluster
+        if subs[0][1] / len(members) >= 0.4:
             auto, cnt = subs[0]
-        elif secs[0][1] / len(members) >= 0.5:        # otherwise the dominant sector
+        elif secs[0][1] / len(members) >= 0.5 or len(secs) == 1:
             auto, cnt = secs[0]
-        else:                                         # otherwise say it's mixed
-            auto, cnt = "Mixed: " + " / ".join(s for s, _ in secs[:2]), secs[0][1]
+        else:
+            auto, cnt = f"{secs[0][0]} & {secs[1][0]}", secs[0][1] + secs[1][1]
         out.append({"id": int(c), "label": auto, "auto": auto, "share": round(cnt / len(members), 2), "n": len(members),
                     "x": r3(np.median(Y[m, 0])), "y": r3(np.median(Y[m, 1])), "members": members})
-    for ov in overrides:  # each override names at most one cluster: the best-matching one
-        match = set(ov.get("tickers", []))
-        match |= {t for t in tick if meta[t]["sector"] in ov.get("sectors", []) or meta[t]["sub"] in ov.get("subs", [])}
+    # each cluster takes the override that covers most of it (>= 50% of members); an override can
+    # name several clusters, but within one layout the bigger cluster keeps the plain name
+    for cl in out:
         best, score = None, 0.0
-        for cl in out:
-            share = len(match & set(cl["members"])) / cl["n"]
-            if cl["n"] >= 4 and share >= 0.6 and share * cl["n"] > score:
-                best, score = cl, share * cl["n"]
+        mem = set(cl["members"])
+        for ov in overrides:
+            match = set(ov.get("tickers", []))
+            match |= {t for t in mem if meta[t]["sector"] in ov.get("sectors", []) or meta[t]["sub"] in ov.get("subs", [])}
+            share = len(match & mem) / cl["n"]
+            if share >= 0.5 and share > score:
+                best, score = ov, share
         if best:
-            best["label"] = ov["label"]
+            cl["label"] = best["label"]
+            cl["share"] = round(score, 2)
+    seen: dict[str, int] = {}
+    for cl in sorted(out, key=lambda c: -c["n"]):
+        seen[cl["label"]] = seen.get(cl["label"], 0) + 1
+        if seen[cl["label"]] > 1:          # e.g. two separate "Banks" islands
+            cl["label"] = f"{cl['label']} ({seen[cl['label']]})"
     for cl in out:
         del cl["members"]
     return out
+
+
+def load_themes():
+    cfg = json.loads(THEMES_FILE.read_text())
+    sets = cfg["sets"]
+
+    def expand(items):
+        out = set()
+        for x in items:
+            out |= set(sets[x[1:]]) if x.startswith("@") else {x}
+        return out
+    rules = [(r["theme"], expand(r["a"]), expand(r["b"])) for r in cfg["rules"]]
+    overrides = {frozenset(o["pair"]): o["theme"] for o in cfg.get("overrides", [])}
+    return rules, overrides
+
+
+def pair_theme(a: str, b: str, meta: dict, rules, overrides) -> str:
+    if frozenset((a, b)) in overrides:
+        return overrides[frozenset((a, b))]
+    sa, sb = meta[a]["sub"], meta[b]["sub"]
+    hit = lambda s, S: "*" in S or s in S
+    for theme, A, B in rules:
+        if (hit(sa, A) and hit(sb, B)) or (hit(sa, B) and hit(sb, A)):
+            return theme
+    x, y = sorted((meta[a]["sector"], meta[b]["sector"]))
+    return x if x == y else f"{x} × {y}"
 
 
 # ----------------------------------------------------------------------------- main
@@ -472,8 +640,7 @@ def window_resid(Rw: np.ndarray, Fw: np.ndarray):
 
 def main():
     import pandas as pd
-    from scipy.linalg import orthogonal_procrustes
-    from scipy.stats import rankdata
+    from scipy.stats import norm, rankdata
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--cached-prices", action="store_true")
@@ -482,13 +649,15 @@ def main():
     CACHE.mkdir(exist_ok=True)
 
     meta = load_universe()
-    factor_only = sorted({f for fs in FACTORS.values() for f in fs} - set(meta))
+    instruments = sorted({f for fs in FACTOR_INSTRUMENTS.values() for f in fs})
+    factor_only = [f for f in instruments if f not in meta]
     data = download_prices(list(meta) + factor_only, args.cached_prices)
     close, volume = data["close"], data["volume"]
     cal = close["SPY"].dropna().index                       # equity trading calendar
     close = close.reindex(cal).ffill(limit=3)               # crypto weekends fold into Monday
     volume = volume.reindex(cal)
     lr = np.log(close).diff().iloc[1:]
+    FR = factor_returns(lr)
     log(f"prices: {close.shape[1]} tickers, {len(cal)} days, {cal[0].date()} to {cal[-1].date()}")
 
     # map window and universe: complete data over the last 2 years (after small-gap fill)
@@ -499,10 +668,12 @@ def main():
     N = len(assets)
     ix = {t: i for i, t in enumerate(assets)}
     is_stock = np.array([meta[t]["cls"] == "stock" for t in assets])
+    is_etf = np.array([meta[t]["cls"] == "etf" for t in assets])
     stock_idx = np.where(is_stock)[0]
+    sectors = [meta[t]["sector"] for t in assets]
 
     # ---- filter metadata
-    ann_vol = lr[assets].iloc[-252:].std() * np.sqrt(252)
+    ann_vol = lr[assets].iloc[-YEAR_DAYS:].std() * np.sqrt(YEAR_DAYS)
     dollar_vol = close[assets] * volume[assets]
     crypto = [t for t in assets if meta[t]["cls"] == "crypto"]
     dollar_vol[crypto] = volume[crypto]                 # Yahoo quotes crypto volume in USD already
@@ -510,7 +681,7 @@ def main():
     ua = os.environ.get("SEC_USER_AGENT", "").strip()
     mcap = {}
     try:
-        shares = shares_outstanding(ua or "MarketMapPro/2.0 (research script)")
+        shares = shares_outstanding(ua or "MarketMapPro/2.1 (research script)")
         last = close[assets].iloc[-1]
         for t in assets:
             cik = meta[t]["cik"]
@@ -528,20 +699,23 @@ def main():
         time.sleep(0.2)
     log(f"market cap: {len(mcap)} of {int(is_stock.sum())} stocks after Yahoo fallback")
 
-    # ---- business text (stocks only)
+    # ---- business text (stocks only): SEC 10-K Item 1, Yahoo only where EDGAR fails
     stocks = [assets[i] for i in stock_idx]
-    source = "yahoo"
-    texts = {}
+    texts: dict[str, str] = {}
     if ua and "@" in ua:
-        texts = edgar_texts(meta, stocks, ua)
-        source = "edgar"
-    missing = [t for t in stocks if t not in texts]
-    if missing:
-        yt = yahoo_texts(missing)
-        texts.update(yt)
-        log(f"business text: {len(stocks) - len(missing)} from EDGAR, {len(yt)} from Yahoo, "
-            f"{len(missing) - len(yt)} name-only")
-    text_src = {t: ("edgar" if source == "edgar" and t not in missing else "yahoo" if t in texts else "name") for t in stocks}
+        texts, failed = edgar_texts(meta, stocks, ua)
+        log(f"EDGAR: Item 1 for {len(texts)} of {len(stocks)} companies")
+    else:
+        failed = list(stocks)
+        log("EDGAR: SEC_USER_AGENT not set (needs a contact email), so every company falls back to Yahoo")
+    yt = yahoo_texts(failed) if failed else {}
+    fallback = sorted(t for t in failed if t in yt)
+    name_only = sorted(t for t in failed if t not in yt)
+    texts.update({t: yt[t] for t in fallback})
+    log(f"business text: {len(stocks) - len(failed)} SEC 10-K, {len(fallback)} Yahoo fallback, {len(name_only)} name only")
+    if ua and fallback:
+        log(f"  fell back to Yahoo: {', '.join(fallback)}")
+    text_src = {t: ("edgar" if t not in failed else "yahoo" if t in yt else "name") for t in stocks}
     raw = [texts.get(t) or f"{meta[t]['name']}: {meta[t]['sub']}" for t in stocks]
     emb = embed([clean_text(x, meta[t]["name"]) for x, t in zip(raw, stocks)])
     S_st = emb @ emb.T
@@ -554,43 +728,40 @@ def main():
     P_st.T[iu_st] = pct_up
     P = np.full((N, N), np.nan)
     P[np.ix_(stock_idx, stock_idx)] = P_st
-    log(f"text similarity: {len(stocks)} stocks, source={source}")
-
     biz_raw = umap_layout(X=emb)
 
-    # ---- yearly windows since 2016
+    # ---- total returns: covariance inputs (2y and 1y, winsorised), written once
     years = sorted({d.year for d in lr.index})
     year_rows = {y: np.where(lr.index.year == y)[0] for y in years}
     years = [y for y in years if len(year_rows[y]) >= 120]
-
-    overrides = json.loads(LABELS_FILE.read_text()) if LABELS_FILE.exists() else []
+    n_years = len(years)
     R2 = win[assets].to_numpy()
-    out_presets, report = {}, {}
+    W2, W1 = winsorize(R2), winsorize(R2[-YEAR_DAYS:])
+    sd2, sd1 = W2.std(0, ddof=1), W1.std(0, ddof=1)
+    C_raw, C_raw1 = corr_matrix(W2), corr_matrix(W1)
     OUT_BIN.mkdir(parents=True, exist_ok=True)
-    M = N * (N - 1) // 2
-
-    # total-return (no factors) correlation over the map window, winsorised the same way
-    C_raw = corr_matrix(winsorize(R2))
+    for f in OUT_BIN.iterdir():
+        f.unlink()
     q16(upper(C_raw)).tofile(OUT_BIN / "matrix_raw.bin")
+    q16(upper(C_raw1)).tofile(OUT_BIN / "matrix_raw_1y.bin")
     np.where(np.isnan(upper(P)), 65535, np.round(np.nan_to_num(upper(P)) * 100)).astype(np.uint16).tofile(OUT_BIN / "sim_pct.bin")
     close[assets].iloc[-MAP_DAYS:].to_numpy().T.astype(np.float32).tofile(OUT_BIN / "series_close.f32")
 
-    for p, fac in FACTORS.items():
+    # ---- pass 1: per-preset residual statistics and raw layouts
+    st: dict[str, dict] = {}
+    for p, cols in FACTOR_COLS.items():
         tp = time.time()
-        inp = np.array([t not in fac for t in assets])        # a factor ETF can't be explained by itself
-        F2 = win[fac].to_numpy()
+        inp = np.array([t not in FACTOR_INSTRUMENTS[p] for t in assets])   # a factor can't explain itself
+        F2 = FR.loc[win.index, cols].to_numpy()
         E2, B2 = window_resid(R2, F2)
         E2[:, ~inp] = np.nan
         C = np.full((N, N), np.nan)
         C[np.ix_(inp, inp)] = corr_matrix(E2[:, inp])
-        expo = exposures(p, B2)
-
-        # yearly stability
         mats = []
         for y in years:
             rows = year_rows[y]
             Ry = lr[assets].iloc[rows].to_numpy()
-            Fy = lr[fac].iloc[rows].to_numpy()
+            Fy = FR[cols].iloc[rows].to_numpy()
             ok = inp & ~np.isnan(Ry).any(0) & ~np.isnan(Fy).any()
             Cy = np.full((N, N), np.nan)
             if ok.sum() > 2:
@@ -598,54 +769,79 @@ def main():
                 Cy[np.ix_(ok, ok)] = corr_matrix(Ey)
             mats.append(Cy)
         K, Nw = stability_counts(mats)
-
-        # long-run level: whole history, each asset regressed on its own available rows
-        Rl = lr[assets].to_numpy()
-        Fl = lr[fac].to_numpy()
+        Rl, Fl = lr[assets].to_numpy(), FR[cols].to_numpy()
         El = np.full_like(Rl, np.nan)
         for j in np.where(inp)[0]:
             m = ~np.isnan(Rl[:, j]) & ~np.isnan(Fl).any(1)
             if m.sum() > 250:
                 e, _ = residualize(Rl[m, j:j + 1], Fl[m])
                 El[m, j] = e[:, 0]
-        El = winsorize(El)
-        CL = pd.DataFrame(El).corr(min_periods=250).to_numpy()
-
-        # recent 60 days, from the 2-year residuals
+        CL = pd.DataFrame(winsorize(El)).corr(min_periods=250).to_numpy()
         C60 = np.full((N, N), np.nan)
         C60[np.ix_(inp, inp)] = corr_matrix(E2[-RECENT_DAYS:, inp])
-
-        # behaviour layout + business layout aligned to it
         sub = np.where(inp)[0]
-        D = np.sqrt(2 * (1 - np.clip(C[np.ix_(sub, sub)], -1, 1)))
-        beh = np.full((N, 2), np.nan)
-        beh[sub] = norm2d(umap_layout(D=D))
-        common = np.array([i for i in stock_idx if inp[i]])
-        bz = norm2d(biz_raw)
-        bz_full = np.full((N, 2), np.nan)
-        bz_full[stock_idx] = bz
-        Rot, _ = orthogonal_procrustes(bz_full[common], beh[common])
-        bz_full[stock_idx] = bz_full[stock_idx] @ Rot
-        s = np.nanmax(np.abs(np.vstack([beh, bz_full])))
-        beh, bz_full = beh / s, bz_full / s
+        if p == "mkt":
+            beh = np.full((N, 2), np.nan)
+            beh[sub] = norm2d(umap_layout(D=np.sqrt(2 * (1 - np.clip(C[np.ix_(sub, sub)], -1, 1)))))
+            moved = []
+        else:
+            # Only stocks whose neighbourhood genuinely changes move (a fresh UMAP, even seeded from the
+            # Market layout and Procrustes-aligned, moved ~96% of dots for no structural reason).
+            beh, moved = anchored_layout(st["mkt"]["beh"], C, st["mkt"]["C"], inp)
+        st[p] = dict(inp=inp, E2=E2, B2=B2, C=C, K=K, Nw=Nw, CL=CL, C60=C60, beh=beh, moved=moved,
+                     sdres=np.nanstd(E2, 0, ddof=1))
+        log(f"preset {p}: {int(inp.sum())} assets, {n_years} yearly windows"
+            + (f", {len(moved)} stocks change neighbourhood vs Market: {', '.join(assets[i] for i in moved[:20])}" if p != "mkt" else "")
+            + f" ({time.time() - tp:.0f}s)")
 
-        # clusters
-        clusters = {}
-        for view, Y in (("beh", beh), ("biz", bz_full)):
-            has = np.where(~np.isnan(Y[:, 0]))[0]
-            lab = np.full(N, -1)
-            lab[has] = hdbscan_labels(Y[has])
-            clusters[view] = {"ids": [int(v) for v in lab],
-                              "labels": label_clusters(lab[has], Y[has], [assets[i] for i in has], meta, overrides)}
+    # ---- keep positions stable: align every layout to the Market layout (orthogonal Procrustes)
+    ref = st["mkt"]["beh"]
+    for p in FACTOR_COLS:
+        if p == "mkt":
+            continue
+        rows = np.where(st[p]["inp"] & st["mkt"]["inp"])[0]
+        b = st[p]["beh"]
+        has = ~np.isnan(b[:, 0])
+        b[has] = align_to(b, ref, rows)[has]
+    bz = np.full((N, 2), np.nan)
+    bz[stock_idx] = norm2d(biz_raw)
+    bz[stock_idx] = align_to(bz, ref, stock_idx)[stock_idx]
+    s = np.nanmax(np.abs(np.vstack([st[p]["beh"] for p in FACTOR_COLS] + [bz])))
+    for p in FACTOR_COLS:
+        st[p]["beh"] /= s
+    bz /= s
+    moved = {p: float(np.nanmedian(np.linalg.norm(st[p]["beh"] - st["mkt"]["beh"], axis=1))) for p in FACTOR_COLS if p != "mkt"}
+    log(f"layouts aligned to Market; median shift: " + ", ".join(f"{p} {v:.3f}" for p, v in moved.items()))
 
-        # neighbours and overlap
+    overrides = json.loads(LABELS_FILE.read_text()) if LABELS_FILE.exists() else []
+    rules, theme_over = load_themes()
+
+    def clusters_for(Y):
+        has = np.where(~np.isnan(Y[:, 0]))[0]
+        lab = np.full(N, -1)
+        lab[has] = hdbscan_labels(Y[has])
+        lab[has], merged = merge_adjacent(lab[has], Y[has], [sectors[i] for i in has])
+        return {"ids": [int(v) for v in lab], "labels": label_clusters(lab[has], Y[has], [assets[i] for i in has], meta, overrides)}, merged
+    biz_clusters, biz_merged = clusters_for(bz)
+
+    # ---- pass 2: clusters, neighbours, lists, exports
+    out_presets, report = {}, {}
+    si, sj = np.triu_indices(N, 1)
+    cik = np.array([meta[t]["cik"] or -(k + 1) for k, t in enumerate(assets)])
+    distinct = cik[si] != cik[sj]            # GOOG/GOOGL, FOX/FOXA, NWS/NWSA are one company
+    for p in FACTOR_COLS:
+        d = st[p]
+        inp, C, K, Nw, CL, C60, beh = d["inp"], d["C"], d["K"], d["Nw"], d["CL"], d["C60"], d["beh"]
+        beh_clusters, merged = clusters_for(beh)
+        for m in merged + (biz_merged if p == "mkt" else []):
+            log(f"  merged adjacent {m[0]} clusters {m[1]}+{m[2]} (gap {m[3]})")
+
         def topk(row, k, pool):
             row = row.copy()
             mask = np.zeros(N, bool)
             mask[pool] = True
             row[~mask | np.isnan(row)] = -np.inf
             return [j for j in np.argsort(-row)[:k] if np.isfinite(row[j])]
-
         st_in = np.array([i for i in stock_idx if inp[i]])
         all_in = np.where(inp)[0]
         nn_beh, overlap = [], []
@@ -654,60 +850,65 @@ def main():
                 nn_beh.append(None)
                 overlap.append(None)
                 continue
-            pool = st_in if is_stock[i] else all_in
             row = C[i].copy()
             row[i] = np.nan
-            nb = topk(row, 5, pool)
+            nb = topk(row, 5, st_in if is_stock[i] else all_in)
             nn_beh.append([[assets[j], r3(C[i, j]), int(K[i, j]), int(Nw[i, j])] for j in nb])
             if is_stock[i]:
                 rs = S[i].copy()
                 rs[i] = np.nan
-                a = set(topk(row, K_OVERLAP, st_in))
-                b = set(topk(rs, K_OVERLAP, stock_idx))
-                overlap.append(round(len(a & b) / K_OVERLAP, 1))
+                overlap.append(round(len(set(topk(row, K_OVERLAP, st_in)) & set(topk(rs, K_OVERLAP, stock_idx))) / K_OVERLAP, 1))
             else:
                 overlap.append(None)
 
-        # lists (stock pairs only; they need business text)
-        si, sj = np.triu_indices(N, 1)
-        both = is_stock[si] & is_stock[sj] & inp[si] & inp[sj]
+        # Hidden twins / Lookalikes: stock pairs, stable across calendar years
         pc, ps, pp = C[si, sj], S[si, sj], P[si, sj]
-        cand = np.where(both)[0]
-        hc = cand[pc[cand] > np.quantile(pc[cand], TOP_Q)]
+        kk, nn = K[si, sj], Nw[si, sj]
+        cand = np.where(is_stock[si] & is_stock[sj] & inp[si] & inp[sj] & distinct)[0]
+        stable = stable_pair(kk, nn, n_years)
+        hc = cand[(pc[cand] > np.quantile(pc[cand], TOP_Q)) & stable[cand]]
         hidden = hc[np.argsort(ps[hc])[:N_LIST]]
-        hs = cand[ps[cand] > np.quantile(ps[cand], TOP_Q)]
+        hs = cand[(ps[cand] > np.quantile(ps[cand], TOP_Q)) & stable[cand]]
         apart = hs[np.argsort(pc[hs])[:N_LIST]]
-        pair = lambda q: {"a": assets[si[q]], "b": assets[sj[q]], "corr": r3(pc[q]), "simPct": round(float(pp[q]), 1),
-                          "k": int(K[si[q], sj[q]]), "n": int(Nw[si[q], sj[q]])}
-        no_etf = np.array([meta[t]["cls"] != "etf" for t in assets])
-        anyp = np.where(inp[si] & inp[sj] & no_etf[si] & no_etf[sj])[0]
-        drop = CL[si, sj] - C60[si, sj]
-        dc = anyp[(K[si[anyp], sj[anyp]] >= STABLE_MIN) & (drop[anyp] > DECOUPLE_DROP)]
-        dc = dc[np.argsort(-drop[dc])][:N_LIST]
+
+        def pair(q):
+            a, b = assets[si[q]], assets[sj[q]]
+            return {"a": a, "b": b, "corr": r3(pc[q]), "simPct": round(float(pp[q]), 1), "k": int(kk[q]), "n": int(nn[q]),
+                    "theme": pair_theme(a, b, meta, rules, theme_over)}
+
+        # Decoupling: strong, durable pairs only; one-sided Fisher z on the last 60 days; BH at q = 0.05
+        tested = np.where(inp[si] & inp[sj] & ~is_etf[si] & ~is_etf[sj] & distinct & (CL[si, sj] >= DECOUPLE_MIN_LR)
+                          & (kk >= math.ceil(DECOUPLE_HELD * n_years)))[0]
+        z = fisher_z(C60[si[tested], sj[tested]], CL[si[tested], sj[tested]])
+        pval = norm.cdf(z)                       # lower tail: the recent correlation fell
+        rej, adj = bh_reject(pval)
+        passing = tested[rej][np.argsort(z[rej])]
+        zq = {int(q): (float(zz), float(aa)) for q, zz, aa in zip(tested, z, adj)}
+        log(f"  decoupling [{PRESET_LABEL[p]}]: {len(tested)} pairs tested, {int(rej.sum())} pass BH at q = {FDR_Q}")
 
         out_presets[p] = {
             "beh": [None if np.isnan(v[0]) else [r3(v[0]), r3(v[1])] for v in beh],
-            "biz": [None if np.isnan(v[0]) else [r3(v[0]), r3(v[1])] for v in bz_full],
+            "biz": [None if np.isnan(v[0]) else [r3(v[0]), r3(v[1])] for v in bz],
             "overlap": overlap,
-            "exposure": [None if not inp[i] else [round(float(x), 2) for x in expo[:, i]] for i in range(N)],
+            "exposure": [None if not inp[i] else [round(float(x), 2) for x in d["B2"][:, i]] for i in range(N)],
+            "sdRes": [sig5(d["sdres"][i]) if inp[i] else None for i in range(N)],
             "nnBeh": nn_beh,
-            "clusters": clusters,
+            "clusters": {"beh": beh_clusters, "biz": biz_clusters},
             "hidden": [pair(q) for q in hidden],
             "apart": [pair(q) for q in apart],
+            "decoupleTested": int(len(tested)),
             "decouple": [{"a": assets[si[q]], "b": assets[sj[q]], "longRun": r3(CL[si[q], sj[q]]),
-                          "recent": r3(C60[si[q], sj[q]]), "k": int(K[si[q], sj[q]]), "n": int(Nw[si[q], sj[q]])} for q in dc],
+                          "recent": r3(C60[si[q], sj[q]]), "k": int(kk[q]), "n": int(nn[q]),
+                          "z": round(zq[int(q)][0], 2), "q": float(f"{zq[int(q)][1]:.2g}")} for q in passing[:N_LIST]],
         }
-        report[p] = out_presets[p]["hidden"][:10]
+        report[p] = out_presets[p]
 
-        # lazy binaries: residual series, and the pair matrices
-        E2.T.astype(np.float32).tofile(OUT_BIN / f"series_resid_{p}.f32")
+        d["E2"].T.astype(np.float32).tofile(OUT_BIN / f"series_resid_{p}.f32")
         with open(OUT_BIN / f"matrix_{p}.bin", "wb") as f:
             q16(upper(C)).tofile(f)
             q16(upper(CL)).tofile(f)
             upper(K).astype(np.uint8).tofile(f)
             upper(Nw).astype(np.uint8).tofile(f)
-        log(f"preset {p}: {int(inp.sum())} assets, {len(years)} yearly windows, "
-            f"{len(out_presets[p]['decouple'])} decoupling pairs ({time.time() - tp:.0f}s)")
 
     nn_biz = []
     for i in range(N):
@@ -721,19 +922,22 @@ def main():
 
     beta_mkt = residualize(R2, win[["SPY"]].to_numpy())[1][0]
     doc = {
-        "version": 2,
+        "version": 2.1,
         "asof": str(cal[-1].date()),
         "start": str(lr.index[0].date()),
         "mapStart": str(win.index[0].date()),
         "dates": [str(d.date()) for d in win.index],
         "years": years,
-        "textSource": source,
-        "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTORS[p], "exposures": EXPOSURE_NAMES[p]} for p in FACTORS],
+        "textSource": "edgar" if len(failed) < len(stocks) else "yahoo",
+        "textFallback": fallback if len(failed) < len(stocks) else [],
+        "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
+                     "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t != "SPY"]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],
                     "mcap": round(mcap[t] / 1e9, 1) if t in mcap and np.isfinite(mcap[t]) else None,
                     "vol": round(float(ann_vol[t]), 3) if np.isfinite(ann_vol[t]) else None,
                     "adv": round(float(adv[t]) / 1e6, 1) if np.isfinite(adv[t]) else None,
                     "beta": round(float(beta_mkt[ix[t]]), 2),
+                    "sd": sig5(sd2[ix[t]]), "sd1y": sig5(sd1[ix[t]]),
                     "text": text_src.get(t)} for t in assets],
         "nnBiz": nn_biz,
         "data": out_presets,
@@ -741,36 +945,62 @@ def main():
     OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(doc, separators=(",", ":"), allow_nan=False))
     log(f"wrote {OUT_JSON.relative_to(ROOT)} ({OUT_JSON.stat().st_size / 1024:.0f} KB) and "
-        f"{len(list(OUT_BIN.iterdir()))} binaries in {OUT_BIN.relative_to(ROOT)} (N={N}, pairs={M})")
+        f"{len(list(OUT_BIN.iterdir()))} binaries in {OUT_BIN.relative_to(ROOT)} (N={N})")
 
     # ---- report
-    log("\nTOP 10 HIDDEN TWINS BY PRESET")
-    for p, rows in report.items():
-        log(f"  [{PRESET_LABEL[p]}]")
-        for r in rows:
-            log(f"    {r['a']:>6} {r['b']:<6} corr {r['corr']:.2f}  less similar than {100 - r['simPct']:.0f}% of pairs"
-                f"  held {r['k']}/{r['n']}  ({meta[r['a']]['sub']} / {meta[r['b']]['sub']})")
-    test = ["NVDA", "AMD", "AVGO", "MSFT", "GOOGL", "JPM", "BAC", "XOM", "CVX", "DUK", "NEE", "O"]
-    ti = [ix[t] for t in test if t in ix]
-    log("\nN_eff, test portfolio (equal weight): " + ", ".join(test))
-    log(f"  total return (no factors): {neff(C_raw[np.ix_(ti, ti)]):.2f}")
-    for p in FACTORS:
-        Cp = matrix_from_bin(p, N)[0]
-        log(f"  residual, {PRESET_LABEL[p]}: {neff(Cp[np.ix_(ti, ti)]):.2f}")
-    log(f"\ndone in {time.time() - t0:.0f}s")
+    log("\nTOP 10 HIDDEN TWINS BY PRESET (stable pairs only)")
+    for p, P_ in report.items():
+        log(f"  [{PRESET_LABEL[p]}]  ({len(P_['hidden'])} pairs pass the stability rule)")
+        for r in P_["hidden"][:10]:
+            log(f"    {r['a']:>6} {r['b']:<6} {r['corr']:.2f}  held {r['k']}/{r['n']}  [{r['theme']}]  "
+                f"({meta[r['a']]['sub']} / {meta[r['b']]['sub']})")
+    log("\nDECOUPLING (Fisher z, one-sided, BH q = 0.05)")
+    for p, P_ in report.items():
+        log(f"  [{PRESET_LABEL[p]}] tested {P_['decoupleTested']}, passed {len(P_['decouple'])}")
+        for r in P_["decouple"][:10]:
+            log(f"    {r['a']:>6} {r['b']:<6} long-run {r['longRun']:.2f} -> 60d {r['recent']:.2f}  z {r['z']}  q {r['q']}")
 
+    test = {"NVDA": 20, "MSFT": 15, "AVGO": 10, "JPM": 10, "BAC": 5, "XOM": 10, "DUK": 10, "NEE": 10, "O": 10}
+    ti = [ix[t] for t in test]
+    w = np.array(list(test.values()), float)
+    w /= w.sum()
+    Sig = C_raw[np.ix_(ti, ti)] * np.outer(sd2[ti], sd2[ti])
+    log("\nTEST PORTFOLIO " + ", ".join(f"{t} {v}" for t, v in test.items()))
+    log(f"  old (v2.0 headline: residual corr, Market): {neff(st['mkt']['C'][np.ix_(ti, ti)], w):.2f}")
+    log(f"  old method on total-return corr:            {neff(C_raw[np.ix_(ti, ti)], w):.2f}")
+    log(f"  new (v2.1 headline: total-return covariance): {neff_cov(Sig, w):.2f}")
+    for p in FACTOR_COLS:
+        Cp = st[p]["C"][np.ix_(ti, ti)]
+        Sr = Cp * np.outer(st[p]["sdres"][ti], st[p]["sdres"][ti])
+        log(f"  new, after removing {PRESET_LABEL[p]}: {neff_cov(Sr, w):.2f}")
+    rc = risk_contrib(Sig, w)
+    ids = report["mkt"]["clusters"]["beh"]["ids"]
+    names = {c["id"]: c["label"] for c in report["mkt"]["clusters"]["beh"]["labels"]}
+    groups: dict[str, list] = {}
+    for k_, t in enumerate(test):
+        g = names.get(ids[ix[t]], "Not in a cluster")
+        groups.setdefault(g, [0.0, 0.0, []])
+        groups[g][0] += w[k_]
+        groups[g][1] += rc[k_]
+        groups[g][2].append(t)
+    log(f"  vol {np.sqrt(w @ Sig @ w * YEAR_DAYS):.1%}  beta {sum(w[k_] * beta_mkt[ix[t]] for k_, t in enumerate(test)):.2f}")
+    for g, (cap, risk, mem) in sorted(groups.items(), key=lambda kv: -kv[1][1]):
+        flag = "  <- risk > capital by 10+ pts" if risk - cap >= 0.10 else ""
+        log(f"    {g:<34} capital {cap:5.1%}  risk {risk:5.1%}  {', '.join(mem)}{flag}")
 
-def matrix_from_bin(p: str, N: int):
-    M = N * (N - 1) // 2
-    raw = np.fromfile(OUT_BIN / f"matrix_{p}.bin", dtype=np.uint8)
-    c = raw[:2 * M].view(np.int16)
-    out = np.full((N, N), np.nan)
-    iu = np.triu_indices(N, 1)
-    v = np.where(c == -32768, np.nan, c / 10000)
-    out[iu] = v
-    out.T[iu] = v
-    np.fill_diagonal(out, 1.0)
-    return out, None
+    k = ix["KKR"]
+    beta2 = C_raw[k] * sd2[k] / sd2
+    beta1 = C_raw1[k] * sd1[k] / sd1
+    liquid = np.array([a is not None and a >= 20 for a in (round(float(adv[t]) / 1e6, 1) if np.isfinite(adv[t]) else None for t in assets)])
+    order = [j for j in np.argsort(-(C_raw[k] ** 2)) if j != k and liquid[j]][:5]
+    log("\nKKR TOP 5 HEDGES (total returns, 2y)")
+    for j in order:
+        unstable = np.sign(beta1[j]) != np.sign(beta2[j]) or abs(beta1[j] - beta2[j]) > 0.5 * abs(beta2[j])
+        verb = "Short" if beta2[j] > 0 else "Buy"
+        log(f"    {verb} {abs(beta2[j]):.2f}x {assets[j]:<6} variance -{C_raw[k, j] ** 2:.0%}  1y beta {beta1[j]:.2f}"
+            f"  {'UNSTABLE' if unstable else 'stable'}")
+    log(f"\nbusiness text fallback to Yahoo: {len(failed)} of {len(stocks)} tickers")
+    log(f"done in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

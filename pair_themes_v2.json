@@ -1,0 +1,40 @@
+{
+  "_about": "Theme tags for Hidden twins / Lookalikes. Rules are checked in order; a rule matches when one stock's GICS sub-industry is in 'a' and the other's is in 'b' (either way round; '*' = any). Overrides win over rules. Unmatched pairs fall back to their two sectors.",
+  "sets": {
+    "UTIL": ["Electric Utilities", "Multi-Utilities", "Gas Utilities", "Water Utilities"],
+    "REIT": ["Data Center REITs", "Health Care REITs", "Hotel & Resort REITs", "Industrial REITs", "Multi-Family Residential REITs", "Office REITs", "Other Specialized REITs", "Retail REITs", "Self-Storage REITs", "Single-Family Residential REITs", "Telecom Tower REITs", "Timber REITs"],
+    "INSURANCE": ["Property & Casualty Insurance", "Multi-line Insurance", "Life & Health Insurance", "Reinsurance", "Insurance Brokers", "Multi-Sector Holdings"],
+    "OIL": ["Integrated Oil & Gas", "Oil & Gas Equipment & Services", "Oil & Gas Exploration & Production", "Oil & Gas Refining & Marketing", "Oil & Gas Storage & Transportation"],
+    "CHEM": ["Commodity Chemicals", "Specialty Chemicals", "Fertilizers & Agricultural Chemicals", "Industrial Gases"],
+    "HOUSING": ["Homebuilding", "Building Products", "Home Improvement Retail", "Homefurnishing Retail", "Construction Materials"],
+    "AI": ["Semiconductors", "Semiconductor Materials & Equipment", "Electronic Components", "Electrical Components & Equipment", "Heavy Electrical Equipment", "Construction & Engineering", "Communications Equipment", "Technology Hardware, Storage & Peripherals", "Electronic Manufacturing Services", "Independent Power Producers & Energy Traders", "Data Center REITs", "Internet Services & Infrastructure"],
+    "SOFTDATA": ["Application Software", "Systems Software", "Financial Exchanges & Data", "Research & Consulting Services", "Human Resource & Employment Services", "Data Processing & Outsourced Services", "IT Consulting & Other Services", "Electronic Equipment & Instruments", "Health Care Technology", "Transaction & Payment Processing Services"],
+    "BANKS": ["Diversified Banks", "Regional Banks", "Investment Banking & Brokerage", "Asset Management & Custody Banks", "Consumer Finance", "Transaction & Payment Processing Services", "Financial Exchanges & Data"],
+    "STAPLES": ["Agricultural Products & Services", "Consumer Staples Merchandise Retail", "Distillers & Vintners", "Food Distributors", "Food Retail", "Household Products", "Packaged Foods & Meats", "Personal Care Products", "Soft Drinks & Non-alcoholic Beverages", "Tobacco"],
+    "TELCO": ["Integrated Telecommunication Services", "Wireless Telecommunication Services", "Cable & Satellite"],
+    "CYCLICAL": ["Industrial Machinery & Supplies & Components", "Construction Machinery & Heavy Transportation Equipment", "Trading Companies & Distributors", "Agricultural & Farm Machinery", "Steel", "Copper", "Industrial Conglomerates", "Diversified Support Services", "Rail Transportation", "Air Freight & Logistics", "Cargo Ground Transportation", "Paper & Plastic Packaging Products & Materials", "Metal, Glass & Plastic Containers", "Distributors", "Automotive Parts & Equipment"],
+    "TRAVEL": ["Hotels, Resorts & Cruise Lines", "Passenger Airlines", "Casinos & Gaming", "Restaurants", "Leisure Products", "Passenger Ground Transportation"],
+    "HEALTH": ["Biotechnology", "Health Care Distributors", "Health Care Equipment", "Health Care Facilities", "Health Care Services", "Health Care Supplies", "Life Sciences Tools & Services", "Managed Health Care", "Pharmaceuticals"]
+  },
+  "rules": [
+    {"theme": "Bond proxies", "a": ["@UTIL"], "b": ["@REIT"]},
+    {"theme": "Bond proxies", "a": ["@UTIL"], "b": ["@INSURANCE"]},
+    {"theme": "Defensives", "a": ["@UTIL", "@REIT"], "b": ["@STAPLES", "@TELCO"]},
+    {"theme": "Utilities", "a": ["@UTIL"], "b": ["@UTIL"]},
+    {"theme": "REITs", "a": ["@REIT"], "b": ["@REIT"]},
+    {"theme": "Housing", "a": ["@HOUSING"], "b": ["*"]},
+    {"theme": "Oil → chemicals", "a": ["@OIL"], "b": ["@CHEM"]},
+    {"theme": "Oil & gas chain", "a": ["@OIL"], "b": ["@OIL"]},
+    {"theme": "AI capex", "a": ["@AI"], "b": ["@AI"]},
+    {"theme": "Insurance", "a": ["@INSURANCE"], "b": ["@INSURANCE"]},
+    {"theme": "Banks & markets", "a": ["@BANKS"], "b": ["@BANKS", "@INSURANCE"]},
+    {"theme": "Software & data", "a": ["@SOFTDATA"], "b": ["@SOFTDATA"]},
+    {"theme": "Industrial cycle", "a": ["@CYCLICAL"], "b": ["@CYCLICAL", "@CHEM", "@AI"]},
+    {"theme": "Travel & leisure", "a": ["@TRAVEL"], "b": ["@TRAVEL"]},
+    {"theme": "Health care", "a": ["@HEALTH"], "b": ["@HEALTH"]},
+    {"theme": "Consumer staples", "a": ["@STAPLES"], "b": ["@STAPLES"]}
+  ],
+  "overrides": [
+    {"pair": ["CAT", "GLW"], "theme": "AI capex", "why": "Caterpillar gensets and Corning fibre both ride data-centre build-outs"}
+  ]
+}

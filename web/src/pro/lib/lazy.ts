@@ -54,9 +54,9 @@ export async function loadMatrix(preset: PresetId, n: number): Promise<PairMatri
   };
 }
 
-/** Total-return correlation (no factors removed) over the map window. */
-export async function loadRawCorr(n: number): Promise<(i: number, j: number) => number> {
-  const c = new Int16Array(await load("matrix_raw.bin"), 0, pairs(n));
+/** Total-return correlation (no factors removed): the 2-year map window, or the last year. */
+export async function loadRawCorr(n: number, span: "2y" | "1y" = "2y"): Promise<(i: number, j: number) => number> {
+  const c = new Int16Array(await load(span === "2y" ? "matrix_raw.bin" : "matrix_raw_1y.bin"), 0, pairs(n));
   return (i, j) => (i === j ? 1 : corr16(c[triIndex(i, j, n)]));
 }
 
