@@ -1051,7 +1051,7 @@ def main():
     beta1 = C_raw1[k] * sd1[k] / sd1
     liquid = np.array([a is not None and a >= 20 for a in (round(float(adv[t]) / 1e6, 1) if np.isfinite(adv[t]) else None for t in assets)])
     ranked = [j for j in np.argsort(-(C_raw[k] ** 2)) if j != k and liquid[j]]
-    etf_h = [j for j in ranked if meta[assets[j]]["cls"] in ("etf", "bond")][:3]
+    etf_h = [j for j in ranked if meta[assets[j]]["cls"] in ("etf", "bond", "commodity")][:3]
     peer_h = [j for j in ranked if meta[assets[j]]["cls"] == "stock"][:3]
     for title, order in (("ETF HEDGES", etf_h), ("PEER HEDGES (pair-trade style)", peer_h)):
         log(f"\nKKR {title} (total returns, 2y)")

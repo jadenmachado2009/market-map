@@ -165,12 +165,12 @@ export function formatNum(v: number, digits = 2, signed = false): string {
   return r < 0 ? "−" + s : (signed ? "+" : "") + s;
 }
 
-/** Asset classes that count as "ETF hedges": sector, index and factor equity ETFs, and bond ETFs. */
-export const ETF_HEDGE_CLASSES: readonly string[] = ["etf", "bond"];
+/** Asset classes that count as "ETF hedges": sector, index and factor equity ETFs, bond ETFs and commodity ETFs (GLD, SLV, USO). */
+export const ETF_HEDGE_CLASSES: readonly string[] = ["etf", "bond", "commodity"];
 
 /**
  * Splits hedge candidates into ETF hedges and peer (single-stock) hedges, each ranked by the share of
- * variance removed and capped at n. Currencies, commodities and crypto belong to neither list.
+ * variance removed and capped at n. Currency ETFs and crypto belong to neither list.
  */
 export function splitHedges<T extends { varCut: number }>(rows: T[], cls: (r: T) => string, n = 3): { etf: T[]; peer: T[] } {
   const ranked = [...rows].sort((x, y) => y.varCut - x.varCut);
