@@ -1,21 +1,77 @@
 {
   "_about": "Item 1 (Business) extraction exceptions. 'custom': filers whose 10-K has no usable 'Item 1. Business' heading (annual-report style layouts); a section starts at a line whose whole text matches a 'start' pattern and ends at the next line matching an 'end' pattern (regex, case-insensitive, full line); the first section with 300+ words wins. 'relaxed': tickers allowed the relaxed Item 1 heading rule. Every custom or relaxed extraction must beat that ticker's Yahoo summary on the quality check, or it stays on Yahoo.",
   "custom": {
-    "C": {"start": ["overview"], "end": ["management.?s discussion and analysis.*", "executive summary", "risk factors"],
-          "why": "Citi files its annual report as the 10-K; the business description sits under 'Overview' with a cross-reference index instead of Item headings"},
-    "MS": {"start": ["business"], "end": ["risk factors"],
-           "why": "Morgan Stanley's body headings are 'Business' / 'Risk Factors' without Item numbers"},
-    "GE": {"start": ["about ge aerospace", "our businesses", "business overview", "our segments?"],
-           "end": ["risk factors", "management.?s discussion and analysis.*", "results of operations", "key performance indicators.*"],
-           "why": "GE uses a cross-reference index; the business is described under its own section names"},
-    "HON": {"start": ["(item\\s*1\\.?\\s*)?business"], "end": ["(item\\s*1a\\.?\\s*)?risk factors"],
-            "why": "Heading not found by the line-start rule; match 'Business' as a stand-alone heading line"},
-    "INTC": {"start": ["our business", "fundamentals of our business", "business overview", "introduction"],
-             "end": ["risk factors.*", "management.?s discussion and analysis.*"],
-             "why": "Intel's 10-K is organised by its own sections with a cross-reference index"},
-    "MCD": {"start": ["(item\\s*1\\.?\\s*)?business(\\s+summary)?", "general"],
-            "end": ["(item\\s*1a\\.?\\s*)?risk factors", "(item\\s*1b\\.?\\s*)?unresolved staff comments"],
-            "why": "Heading not found by the line-start rule; match the stand-alone heading lines"}
+    "C": {
+      "start": [
+        "overview"
+      ],
+      "end": [
+        "management.?s discussion and analysis.*",
+        "executive summary",
+        "risk factors"
+      ],
+      "why": "Citi files its annual report as the 10-K: no Item headings in the body; the business is described under 'Overview' (passed the quality check in CI run #5)"
+    },
+    "MS": {
+      "start": [
+        "business"
+      ],
+      "end": [
+        "risk factors"
+      ],
+      "why": "Morgan Stanley's body headings are 'Business' / 'Risk Factors' without Item numbers (passed the quality check in CI run #5)"
+    },
+    "GE": {
+      "start": [
+        "form 10-k cross.?reference index.*"
+      ],
+      "end": [
+        "consolidated results",
+        "management.?s discussion and analysis.*",
+        "risk factors"
+      ],
+      "why": "GE's 10-K has no Item 1 heading in the body and no stand-alone 'About GE Aerospace' line (only in the contents); the business description runs from the end of the contents (its last line is the cross-reference index entry) to 'CONSOLIDATED RESULTS', where MD&A starts (2025 10-K)"
+    },
+    "HON": {
+      "start": [
+        "about honeywell"
+      ],
+      "end": [
+        "management.?s discussion and analysis.*",
+        "review of business segments",
+        "risk factors"
+      ],
+      "why": "Honeywell's 10-K replaces 'Item 1. Business' with an 'ABOUT HONEYWELL' section (also a running page header): executive summary, major businesses and the four segments, then MD&A (2025 10-K)"
+    },
+    "INTC": {
+      "start": [
+        "our business",
+        "fundamentals of our business",
+        "business overview",
+        "introduction"
+      ],
+      "end": [
+        "risk factors.*",
+        "management.?s discussion and analysis.*"
+      ],
+      "why": "Intel's 10-K is organised by its own sections with a cross-reference index; the business starts at 'Our Business'-style headings (passed the quality check in CI run #5)"
+    },
+    "MCD": {
+      "start": [
+        "(item\\s*1\\.?\\s*)?business(\\s+summary)?",
+        "general"
+      ],
+      "end": [
+        "(item\\s*1a\\.?\\s*)?risk factors",
+        "(item\\s*1b\\.?\\s*)?unresolved staff comments"
+      ],
+      "why": "The line-start Item 1 rule finds no 300-word section; stand-alone 'Business' / 'General' heading lines work (passed the quality check in CI run #5)"
+    }
   },
-  "relaxed": ["AIG", "EXC", "EXPE"]
+  "relaxed": [
+    "AIG",
+    "EXC",
+    "EXPE"
+  ],
+  "_relaxed_rule": "AIG writes 'ITEM 1 | Business'; EXPE's end heading is 'Part I. Item 1A. Risk Factors'. The relaxed rule accepts '|' separators, 'Part I.' prefixes and headings after other text on the line, but the heading must end its line."
 }

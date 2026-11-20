@@ -396,11 +396,16 @@ def _trim_section(span: str, max_words: int) -> str:
     return " ".join(" ".join(kept).split()[:max_words])
 
 
-# Relaxed rule (named tickers only): the Item 1 heading may sit anywhere in a line, e.g. after a running
-# page header ("2025 Form 10-K  3  ITEM 1. BUSINESS"); the section still needs 300+ words.
-ITEM1_ANY = re.compile(r"\bitems?\s*1\s*(?:(?:and|&|,)\s*2\s*)?[\.:\-–—]?\s*(?:description\s+of\s+(?:the\s+)?)?business\b"
-                       r"(?:\s*(?:and|&)\s*properties\b)?", re.I)
-ITEM1A_ANY = re.compile(r"\bitem\s*1a\s*[\.:\-–—]?\s*risk\s*factors", re.I)
+# Relaxed rule (named tickers only). A heading may follow other text on its line (a running page header,
+# "Part I."), may use "|" as its separator ("ITEM 1 | Business", AIG), and the same goes for the end
+# heading ("Part I. Item 1A. Risk Factors", EXPE) - but it must END its line, so an inline
+# cross-reference ("see Item 1. Business - Regulation for ...") can't start or end a section.
+ITEM1_RELAXED = re.compile(r"(?:^|[^\S\n])(?:part\s+i\b[\s,.\-–—|]*)?items?\s*1\s*(?:(?:and|&|,)\s*2\s*)?[\.:\-–—|]?\s*"
+                           r"(?:description\s+of\s+(?:the\s+)?)?business\b(?:\s*(?:and|&)\s*properties\b)?[^\S\n]*$",
+                           re.I | re.M)
+ITEM_END_RELAXED = re.compile(r"(?:^|[^\S\n])(?:part\s+i\b[\s,.\-–—|]*)?item\s*(?:1a|1b|1c|2|3)\s*[\.:\-–—|]?\s*"
+                              r"(?:risk\s*factors|unresolved[^\n]*|cybersecurity|properties|legal\s+proceedings)[^\S\n]*$",
+                              re.I | re.M)
 
 
 def extract_item1(text: str, max_words: int = ITEM1_WORDS, relaxed: bool = False) -> str | None:
@@ -408,12 +413,12 @@ def extract_item1(text: str, max_words: int = ITEM1_WORDS, relaxed: bool = False
     whose section (up to the next line-start Item 1A/1B/1C/2/3 heading) has 300+ words, so the table of
     contents (a few words) is skipped and cross-references can't start a span. Stops at the first
     boilerplate sub-heading (regulation, human capital, executive officers...) once 300 words are in,
-    then caps at max_words. None if no section qualifies. relaxed=True (named tickers only) also accepts
-    a heading in mid-line and, if no line-start end heading follows, an inline 'Item 1A. Risk Factors'."""
-    ends = [m.start() for m in ITEM_END.finditer(text)]
-    inline_ends = [m.start() for m in ITEM1A_ANY.finditer(text)] if relaxed else []
-    for m in (ITEM1_ANY if relaxed else ITEM1).finditer(text):
-        nxt = [e for e in ends if e > m.end()] or [e for e in inline_ends if e > m.end()]
+    then caps at max_words. None if no section qualifies. relaxed=True (named tickers only) uses
+    ITEM1_RELAXED / ITEM_END_RELAXED: headings after other text on the line, "|" separators, "Part I."
+    prefixes, as long as the heading ends its line."""
+    ends = [m.start() for m in (ITEM_END_RELAXED if relaxed else ITEM_END).finditer(text)]
+    for m in (ITEM1_RELAXED if relaxed else ITEM1).finditer(text):
+        nxt = [e for e in ends if e > m.end()]
         span = text[m.end():nxt[0]] if nxt else ""
         if len(span.split()) >= ITEM1_MIN_WORDS:
             return _trim_section(span, max_words)
@@ -444,7 +449,7 @@ HEADING_HINT = re.compile(r"\bitem\s*\d|\bpart\s+i|business|overview|risk\s+fact
                           r"|our\s+compan|about\s|introduction|general|products|cross.?reference", re.I)
 
 
-def heading_dump(text: str, limit: int = 70) -> list[str]:
+def heading_dump(text: str, limit: int = 160) -> list[str]:
     """Heading-like lines of a filing (short lines naming items, parts or business sections) with their
     word offset, for writing custom extractors from CI logs."""
     out, words = [], 0

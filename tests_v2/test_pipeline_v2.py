@@ -350,16 +350,34 @@ class V23TextRules(unittest.TestCase):
         self.assertIsNone(p.extract_by_headings(doc, ["our business"], ["risk factors"]))
 
     def test_relaxed_rule_is_opt_in(self):
-        doc = (_words("toc", 20) + "\n2025 Form 10-K 3 ITEM 1. BUSINESS " + _words("ins", 400)
-               + " 2025 Form 10-K 9 ITEM 1A. RISK FACTORS " + _words("risk", 200))
-        self.assertIsNone(p.extract_item1(doc))                  # the strict rule needs a line-start heading
+        # AIG: "ITEM 1 | Business" as a running page header; EXPE: "Part I. Item 1A. Risk Factors" as the end
+        doc = (_words("toc", 20) + "\nSee Item 1. Business - Regulation for details " + _words("xref", 350)
+               + "\nTABLE OF CONTENTS ITEM 1 | Business\n" + _words("ins", 400)
+               + "\n2025 Form 10-K 9 Part I. Item 1A. Risk Factors\n" + _words("risk", 200))
+        self.assertIsNone(p.extract_item1(doc))                  # the strict rule finds no heading here
         out = p.extract_item1(doc, relaxed=True)
         self.assertIsNotNone(out)
-        self.assertTrue(out.startswith("ins0"))
+        self.assertTrue(out.startswith("ins0"))                  # the inline cross-reference doesn't start it
+        self.assertNotIn("xref", out)
         self.assertNotIn("risk0", out)
+        # the strict rule is unchanged: "|" and a "Part I." end prefix still don't count without relaxed=True
+        self.assertIsNone(p.extract_item1("ITEM 1 | Business\n" + _words("a", 400) + "\nITEM 1A | Risk Factors\n"))
         cfg = p.load_extractors()
         self.assertEqual(cfg["relaxed"], {"AIG", "EXC", "EXPE"})
         self.assertEqual(set(cfg["custom"]), {"C", "MS", "GE", "HON", "INTC", "MCD"})
+
+    def test_ge_and_hon_configs_on_their_layouts(self):
+        cfg = p.load_extractors()["custom"]
+        ge = ("TABLE OF CONTENTS\nAbout GE Aerospace\nManagement’s Discussion and Analysis of Financial Condition and\n"
+              "Segment Operations\nRisk Factors\nForm 10-K Cross Reference Index\n" + _words("engine", 600)
+              + "\n2025 FORM 10-K 3\n" + _words("engine", 300) + "\nCONSOLIDATED RESULTS\n" + _words("rev", 500))
+        out = p.extract_by_headings(ge, cfg["GE"]["start"], cfg["GE"]["end"])
+        self.assertTrue(out.startswith("engine0") and "rev0" not in out)
+        hon = ("About Honeywell\nManagement’s Discussion and Analysis of Financial Condition\nRisk Factors\n"
+               "TABLE OF CONTENTS\nABOUT HONEYWELL\n" + _words("aero", 300) + "\nTABLE OF CONTENTS\nABOUT HONEYWELL\n"
+               "MAJOR BUSINESSES\n" + _words("auto", 300) + "\nMANAGEMENT’S DISCUSSION AND ANALYSIS OF\n" + _words("mda", 400))
+        out = p.extract_by_headings(hon, cfg["HON"]["start"], cfg["HON"]["end"])
+        self.assertTrue(out.startswith("aero0") and "auto0" in out and "mda0" not in out)
 
     def test_lookup_trace_records_urls_and_responses(self):
         class Resp:
