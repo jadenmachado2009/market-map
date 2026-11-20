@@ -611,6 +611,32 @@ def same_source(src: np.ndarray, si: np.ndarray, sj: np.ndarray) -> np.ndarray:
     return src[si] == src[sj]
 
 
+READS_LIKE_MIN_POOL = 100  # "Reads like" ranks a stock only if this many other stocks share its text source
+
+
+def reads_like(S: np.ndarray, P: np.ndarray, is_stock: np.ndarray, src: np.ndarray, assets: list,
+               min_pool: int = READS_LIKE_MIN_POOL, k: int = 5) -> list:
+    """Top-k business-text neighbours of each stock, compared only with stocks of the same text source
+    (10-K with 10-K, Yahoo with Yahoo). [] ("Not enough comparable text") when fewer than min_pool other
+    stocks share the source: with 100+ the 5 shown are the top 5% of candidates or better. Yahoo fallback
+    stocks number about a dozen, and Yahoo-vs-Yahoo similarity is inflated by the shared summary style
+    (different-sector pairs: median 73rd pctl vs 45th for 10-K pairs), so their "top 5" was noise
+    (VLO read like a packager, a copper miner and a utility). None for non-stocks."""
+    out = []
+    for i in range(len(assets)):
+        if not is_stock[i]:
+            out.append(None)
+            continue
+        peers = is_stock & (src == src[i])
+        peers[i] = False
+        if peers.sum() < max(min_pool, k):
+            out.append([])
+            continue
+        row = np.where(peers, S[i], -np.inf)
+        out.append([[assets[j], round(float(P[i, j]), 1)] for j in np.argsort(-row)[:k]])
+    return out
+
+
 def text_gate(q_edgar: dict, q_yahoo: dict) -> bool:
     """True if the 10-K embeddings are fit to use: not clearly worse than Yahoo's on either check."""
     eps = 1e-9
@@ -1262,21 +1288,7 @@ def main():
             upper(K).astype(np.uint8).tofile(f)
             upper(Nw).astype(np.uint8).tofile(f)
 
-    # "Reads like" compares texts of the same source only (10-K with 10-K, Yahoo with Yahoo); an empty
-    # list means fewer than 5 other stocks share this stock's source ("Not enough comparable text").
-    nn_biz = []
-    for i in range(N):
-        if not is_stock[i]:
-            nn_biz.append(None)
-            continue
-        peers = is_stock & (src_arr == src_arr[i])
-        peers[i] = False
-        if peers.sum() < 5:
-            nn_biz.append([])
-            continue
-        row = S[i].copy()
-        row[~peers] = -np.inf
-        nn_biz.append([[assets[j], round(float(P[i, j]), 1)] for j in np.argsort(-row)[:5]])
+    nn_biz = reads_like(S, P, is_stock, src_arr, assets)
 
     beta_mkt = residualize(R2, win[["SPY"]].to_numpy())[1][0]
     doc = {
@@ -1290,6 +1302,7 @@ def main():
         "textFallback": fallback if used_edgar else [],
         "textRejected": text_rejected,
         "textCheck": text_check,
+        "readsLikeMinPool": READS_LIKE_MIN_POOL,
         "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
                      "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t in ix]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],

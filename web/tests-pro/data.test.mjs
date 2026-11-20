@@ -48,19 +48,23 @@ test("hedge universe has index and factor ETFs, and factors are never plotted in
   }
 });
 
-test("mixed-source rule: no list pair mixes text sources, and Reads like stays within a source", () => {
+test("mixed-source rule: no list pair mixes text sources; Reads like stays within a source and needs readsLikeMinPool peers", () => {
   const src = Object.fromEntries(data.assets.map((a) => [a.t, a.text]));
   for (const [p, P] of Object.entries(data.data)) {
     for (const list of ["hidden", "apart"]) {
       for (const r of P[list]) assert.equal(src[r.a], src[r.b], `${p}/${list}: ${r.a} (${src[r.a]}) vs ${r.b} (${src[r.b]})`);
     }
   }
+  const minPool = data.readsLikeMinPool ?? 5;
+  assert.ok(minPool >= 5);
   const count = {};
   data.assets.forEach((a) => { if (a.cls === "stock") count[a.text] = (count[a.text] ?? 0) + 1; });
   data.nnBiz.forEach((nb, i) => {
     const a = data.assets[i];
     if (a.cls !== "stock") return assert.equal(nb, null);
-    if (nb.length === 0) return assert.ok(count[a.text] - 1 < 5, `${a.t}: empty Reads like but ${count[a.text] - 1} comparable stocks`);
+    const pool = count[a.text] - 1;
+    if (nb.length === 0) return assert.ok(pool < minPool, `${a.t}: empty Reads like but ${pool} comparable stocks`);
+    assert.ok(pool >= minPool && nb.length === 5, `${a.t}: ${nb.length} Reads like entries from a pool of ${pool}`);
     for (const [t] of nb) assert.equal(src[t], a.text, `${a.t} (${a.text}) reads like ${t} (${src[t]})`);
   });
 });

@@ -421,6 +421,46 @@ class V23TextRules(unittest.TestCase):
         self.assertTrue(p.text_gate({"sub": 0, "sector": 0.74, "sameSubPct": 94}, {"sub": 0, "sector": 0.78, "sameSubPct": 97}))
 
 
+class ReadsLike(unittest.TestCase):
+    """Reads like: same text source only, and hidden when the source's pool is too small to rank."""
+
+    def setUp(self):
+        rng = np.random.default_rng(3)
+        self.assets = [f"E{k}" for k in range(8)] + ["Y0", "Y1", "Y2", "ETF"]
+        n = len(self.assets)
+        X = rng.normal(size=(n, 6))
+        X[8] = X[0] + 0.01 * rng.normal(size=6)          # Y0's text is nearly E0's: still not a match (other source)
+        self.S = np.corrcoef(X)
+        self.P = (self.S + 1) * 50
+        self.is_stock = np.array([True] * 11 + [False])
+        self.src = np.array(["edgar"] * 8 + ["yahoo"] * 3 + [""])
+
+    def test_same_source_and_ordering(self):
+        nb = p.reads_like(self.S, self.P, self.is_stock, self.src, self.assets, min_pool=5)
+        self.assertIsNone(nb[11])                          # ETF
+        for i in range(8):
+            self.assertEqual(len(nb[i]), 5)
+            self.assertTrue(all(t.startswith("E") and t != self.assets[i] for t, _ in nb[i]))
+            pcts = [v for _, v in nb[i]]
+            self.assertEqual(pcts, sorted(pcts, reverse=True))
+            best = max((j for j in range(8) if j != i), key=lambda j: self.S[i, j])
+            self.assertEqual(nb[i][0], [self.assets[best], round(float(self.P[i, best]), 1)])
+        self.assertNotIn("Y0", [t for t, _ in nb[0]])
+
+    def test_small_pool_is_hidden(self):
+        nb = p.reads_like(self.S, self.P, self.is_stock, self.src, self.assets, min_pool=5)
+        self.assertEqual(nb[8:11], [[], [], []])           # 2 other Yahoo stocks < 5
+        nb = p.reads_like(self.S, self.P, self.is_stock, self.src, self.assets, min_pool=8)
+        self.assertEqual(nb[:11], [[]] * 11)               # 7 other 10-K stocks < 8 too
+        nb = p.reads_like(self.S, self.P, self.is_stock, self.src, self.assets, min_pool=7)
+        self.assertEqual(len(nb[0]), 5)                    # exactly min_pool peers is enough
+
+    def test_default_pool(self):
+        self.assertEqual(p.READS_LIKE_MIN_POOL, 100)
+        nb = p.reads_like(self.S, self.P, self.is_stock, self.src, self.assets)
+        self.assertEqual(nb[:11], [[]] * 11)
+
+
 class TextQualityGate(unittest.TestCase):
     def test_quality_and_gate(self):
         rng = np.random.default_rng(1)

@@ -20,15 +20,16 @@ const Tick = ({ t, onPick, strong }: { t: string; onPick: (t: string) => void; s
   </button>
 );
 
-export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, textSource, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
+export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, textSource, minPool, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
   i: number;
   a: Asset;
   presetLabel: string;
   exposureNames: string[];
   exposure: number[] | null;
   nnBeh: NnBeh[] | null;
-  nnBiz: NnBiz[] | null; // [] = fewer than 5 other stocks share this stock's text source
+  nnBiz: NnBiz[] | null; // [] = fewer than minPool other stocks share this stock's text source
   textSource: "edgar" | "yahoo";
+  minPool?: number;
   firstYear: number;
   matrix: PairMatrix | null;
   raw2: Corr;
@@ -42,6 +43,7 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
   const bizSet = new Set((nnBiz ?? []).map(([t]) => t));
   const behSet = new Set((nnBeh ?? []).map(([t]) => t));
   const index = new Map(assets.map((x, j) => [x.t, j]));
+  const pool = assets.filter((b) => b.cls === "stock" && b.text === a.text).length - 1;
   return (
     <Card>
       <div className="flex items-start justify-between gap-2">
@@ -100,7 +102,12 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
         <div>
           <ListHead title="Reads like" />
           {nnBiz && nnBiz.length === 0 ? (
-            <p className="text-xs text-ink-3">Not enough comparable text.</p>
+            <p className="text-xs text-ink-3">
+              Not enough comparable text
+              {minPool && (a.text === "yahoo" || a.text === "edgar")
+                ? `: ${pool === 1 ? "only 1 other stock uses" : `only ${pool} other stocks use`} ${a.text === "yahoo" ? "Yahoo summaries" : "10-K text"}, and a fair ranking needs ${minPool}.`
+                : "."}
+            </p>
           ) : nnBiz ? (
             <ol className="space-y-0.5">
               {nnBiz.map(([t, pct]) => (

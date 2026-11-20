@@ -285,6 +285,7 @@ export default function ProApp({ data }: { data: ProData }) {
             nnBeh={P.nnBeh[sel]}
             nnBiz={data.nnBiz[sel]}
             textSource={data.textSource}
+            minPool={data.readsLikeMinPool}
             firstYear={data.years[0]}
             matrix={matrix}
             raw2={raw?.get ?? null}
