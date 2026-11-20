@@ -58,6 +58,11 @@ export default function ProPage() {
                   Source: SEC 10-K Item 1.
                   {data.textFallback.length > 0 && ` ${data.textFallback.length} companies fell back to Yahoo summaries.`}
                 </>
+              ) : data.textRejected ? (
+                <>
+                  Source: Yahoo Finance business summaries. This run&apos;s SEC 10-K text failed a quality check (companies in the
+                  same industry read less alike than in the summaries), so it isn&apos;t used.
+                </>
               ) : (
                 <>Source: Yahoo Finance business summaries for now. The pipeline reads SEC 10-K Item 1 once its SEC contact is configured.</>
               )}{" "}

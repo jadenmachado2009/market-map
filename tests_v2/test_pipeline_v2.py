@@ -231,6 +231,119 @@ class Watchlist(unittest.TestCase):
         self.assertEqual(p.watchlist(np.array([-2.0, -1.0]), np.array([True, True])).size, 0)
 
 
+def _words(tag: str, n: int) -> str:
+    return " ".join(f"{tag}{k % 7}" for k in range(n))
+
+
+class TenKExtraction(unittest.TestCase):
+    """Synthetic 10-K plain text shaped like html_to_text output: one block per line."""
+    TOC = "PART I\nItem 1.\nBusiness\n3\nItem 1A.\nRisk Factors\n14\nItem 2.\nProperties\n30\n"
+
+    def test_skips_contents_and_cross_references_and_stops_at_item_1a(self):
+        doc = (self.TOC
+               + "Forward-looking statements are discussed in Item 1. Business and Item 1A. Risk Factors of this report. "
+               + _words("noise", 500) + "\n"
+               + "PART I\nITEM 1. BUSINESS\nOverview\n" + _words("grain", 450) + "\n"
+               + "Item 1A. Risk Factors\n" + _words("risk", 900) + "\n"
+               + "Item 7. Management's Discussion\nSee Item 1. Business above and Item 1A. Risk Factors.\n" + _words("mda", 4000))
+        out = p.extract_item1(doc)
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("Overview grain0"))
+        self.assertNotIn("noise", out)            # the inline cross-reference never starts a span
+        self.assertNotIn("risk", out)
+        self.assertNotIn("mda", out)              # v2.1's longest-span rule took this later span
+
+    def test_items_1_and_2_heading_used_by_oil_and_gas_filers(self):
+        doc = (self.TOC + "Items 1 and 2. Business and Properties\n" + _words("oil", 600)
+               + "\nItem 1A. Risk Factors\n" + _words("risk", 300))
+        out = p.extract_item1(doc)
+        self.assertIsNotNone(out)
+        self.assertTrue(out.split()[0].startswith("oil"))
+        self.assertNotIn("risk", out)
+        doc2 = "PART I, ITEM 1 — BUSINESS\n" + _words("chip", 400) + "\nITEM 3. LEGAL PROCEEDINGS\n" + _words("law", 50)
+        self.assertNotIn("law", p.extract_item1(doc2))
+
+    def test_cuts_boilerplate_subsections_once_300_words_are_in(self):
+        doc = ("Item 1. Business\n" + _words("fund", 350) + "\nHuman Capital\n" + _words("staff", 200)
+               + "\nRegulation\n" + _words("rule", 400) + "\nItem 1A. Risk Factors\n")
+        out = p.extract_item1(doc)
+        self.assertEqual(len(out.split()), 350)
+        self.assertNotIn("staff", out)
+        self.assertNotIn("rule", out)
+        # a boilerplate heading before 300 words of business text doesn't cut it short
+        early = "Item 1. Business\nRegulation\n" + _words("bank", 400) + "\nItem 1A. Risk Factors\n"
+        self.assertEqual(len(p.extract_item1(early).split()), 401)
+        # and a long sentence starting with "Regulation" is text, not a heading
+        prose = ("Item 1. Business\n" + _words("x", 320) + "\nRegulation of our products by the FDA shapes how we "
+                 "design, test and sell every device we make " + _words("y", 30) + "\nItem 1A. Risk Factors\n")
+        self.assertIn("y0", p.extract_item1(prose))
+
+    def test_short_or_missing_sections_give_none_and_cap_applies(self):
+        self.assertIsNone(p.extract_item1(self.TOC))
+        self.assertIsNone(p.extract_item1("Item 1. Business\n" + _words("a", 100) + "\nItem 1A. Risk Factors\n"))
+        self.assertIsNone(p.extract_item1("no headings here " + _words("a", 1000)))
+        long = "Item 1. Business\n" + _words("a", 5000) + "\nItem 1A. Risk Factors\n"
+        self.assertEqual(len(p.extract_item1(long, max_words=3000).split()), 3000)
+
+    def test_inline_xbrl_style_html(self):
+        body = "".join(f"<div><span>{_words('grain', 60)}.</span></div>" for _ in range(6))
+        html = ("<html><body><ix:header><span>dei data</span></ix:header>"
+                "<table><tr><td>Item 1.</td><td>Business</td><td>3</td></tr>"
+                "<tr><td>Item 1A.</td><td>Risk Factors</td><td>14</td></tr></table>"
+                "<div><span style='font-weight:700'>PART I</span></div>"
+                "<div><span style='font-weight:700'>ITEM 1.</span><span>&#160;</span><span>BUSINESS</span></div>"
+                "<div><span>Overview</span></div>" + body +
+                "<div><span>As described in Item 1A. Risk Factors, prices vary.</span></div>" + body +
+                "<div><span style='font-weight:700'>ITEM&#160;1A.&#160;RISK FACTORS</span></div>"
+                f"<div>{_words('risk', 400)}</div></body></html>").encode()
+        out = p.extract_item1(p.html_to_text(html))
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("Overview grain0"))
+        self.assertIn("prices vary", out)          # an inline mention of Item 1A doesn't end the section
+        self.assertNotIn("risk0", out)
+        self.assertNotIn("dei", out)
+
+    def test_latest_10k_reads_older_pages_when_recent_has_none(self):
+        class Resp:
+            def __init__(self, d): self.d = d
+            def json(self): return self.d
+
+        class Http:
+            def __init__(self): self.urls = []
+            def get(self, url):
+                self.urls.append(url)
+                if url.endswith("CIK0000034088.json"):
+                    return Resp({"filings": {"recent": {"form": ["4", "8-K", "10-Q"], "accessionNumber": ["a", "b", "c"],
+                                                        "primaryDocument": ["x", "y", "z"]},
+                                             "files": [{"name": "CIK0000034088-submissions-001.json"}]}})
+                return Resp({"form": ["4", "10-K/A", "10-K", "10-K"], "accessionNumber": ["d", "e", "f", "g"],
+                             "primaryDocument": ["p", "q", "xom-10k.htm", "old.htm"]})
+        http = Http()
+        self.assertEqual(p.latest_10k(http, 34088), ("f", "xom-10k.htm"))   # newest 10-K, never the amendment
+        self.assertTrue(http.urls[1].endswith("CIK0000034088-submissions-001.json"))
+
+
+class TextQualityGate(unittest.TestCase):
+    def test_quality_and_gate(self):
+        rng = np.random.default_rng(1)
+        centres = rng.normal(size=(4, 16))
+        subs = [f"s{k // 10}" for k in range(40)]
+        secs = [f"S{k // 20}" for k in range(40)]
+        good = np.vstack([centres[k // 10] + 0.05 * rng.normal(size=16) for k in range(40)])
+        good /= np.linalg.norm(good, axis=1, keepdims=True)
+        noisy = rng.normal(size=(40, 16))
+        noisy /= np.linalg.norm(noisy, axis=1, keepdims=True)
+        qg, qn = p.text_quality(good, subs, secs), p.text_quality(noisy, subs, secs)
+        self.assertEqual(qg["sub"], 1.0)
+        self.assertEqual(qg["sector"], 1.0)
+        self.assertGreater(qg["sameSubPct"], 85)
+        self.assertLess(qn["sub"], 0.5)
+        self.assertTrue(p.text_gate(qg, qn))       # better than the baseline: use it
+        self.assertFalse(p.text_gate(qn, qg))      # clearly worse: fall back
+        near = {"sub": qg["sub"], "sector": qg["sector"] - 0.03, "sameSubPct": qg["sameSubPct"] - 2.5}
+        self.assertTrue(p.text_gate(near, qg))     # within tolerance
+
+
 class TriangleIndex(unittest.TestCase):
     def test_matches_numpy_order(self):
         n = 7

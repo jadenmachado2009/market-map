@@ -339,8 +339,23 @@ class Polite:
         return r
 
 
-ITEM1 = re.compile(r"item\s*1\s*[\.:\-–—]?\s*business\b", re.I)
-ITEM1A = re.compile(r"item\s*1a\s*[\.:\-–—]?\s*risk\s*factors", re.I)
+# Section headings must start a line: inline cross-references ("see Item 1. Business") are what the
+# v2.1 longest-span rule latched onto. Covers "Item 1. Business", "PART I, ITEM 1 — BUSINESS" and
+# "Items 1 and 2. Business and Properties" (most oil & gas filers).
+ITEM1 = re.compile(r"^[^\S\n]*(?:part\s+i\b[\s,.\-–—]*)?items?\s*1\s*(?:(?:and|&|,)\s*2\s*)?[\.:\-–—]?\s*"
+                   r"(?:description\s+of\s+(?:the\s+)?)?business\b(?:\s*(?:and|&)\s*properties\b)?", re.I | re.M)
+# ...and it ends at the next Part I heading: 1A, 1B, 1C, 2 Properties or 3 Legal Proceedings
+ITEM_END = re.compile(r"^[^\S\n]*item\s*(?:1a|1b|1c|2|3)\s*[\.:\-–—]?\s*"
+                      r"(?:risk\s*factors|unresolved|cybersecurity|properties|legal\s+proceedings)", re.I | re.M)
+# Sub-sections that read alike across unrelated companies (regulation made KKR "read like" a bank)
+BOILER_HEAD = re.compile(r"^(?:(?:government(?:al)?|supervision\s+and)\s+)?regulation\b|^regulatory\b|^human\s+capital"
+                         r"|^(?:our\s+)?employees\b|^environmental\b|^available\s+information|^where\s+you\s+can\s+find"
+                         r"|^(?:information\s+about\s+(?:our\s+)?)?executive\s+officers", re.I)
+ITEM1_MIN_WORDS = 300
+TEXT_GATE_SECTOR = 0.04   # 10-K text is dropped for Yahoo if its top-5 neighbours share a sector this much less often
+TEXT_GATE_SUBPCT = 3.0    # ... or same-sub-industry pairs score this many percentile points lower
+TEXT_PROBES = [("ADM", "BG"), ("AMGN", "BMY"), ("CVX", "XOM"), ("COF", "SYF"), ("KO", "PEP"), ("V", "MA"),
+               ("HD", "LOW"), ("KKR", "BX"), ("KKR", "TFC"), ("UNH", "ELV")]
 
 
 def html_to_text(html: bytes) -> str:
@@ -357,54 +372,106 @@ def html_to_text(html: bytes) -> str:
 
 
 def extract_item1(text: str, max_words: int = ITEM1_WORDS) -> str | None:
-    """Longest span between an 'Item 1. Business' heading and the next 'Item 1A. Risk Factors',
-    capped at max_words. None if nothing substantial is found (table-of-contents hits are short)."""
-    best = ""
-    ends = [m.start() for m in ITEM1A.finditer(text)]
+    """Item 1 (Business) of a 10-K's plain text. Takes the FIRST line-start 'Item 1. Business' heading
+    whose section (up to the next line-start Item 1A/1B/1C/2/3 heading) has 300+ words, so the table of
+    contents (a few words) is skipped and cross-references can't start a span. Stops at the first
+    boilerplate sub-heading (regulation, human capital, executive officers...) once 300 words are in,
+    then caps at max_words. None if no section qualifies."""
+    ends = [m.start() for m in ITEM_END.finditer(text)]
     for m in ITEM1.finditer(text):
         nxt = [e for e in ends if e > m.end()]
-        if not nxt:
+        span = text[m.end():nxt[0]] if nxt else ""
+        if len(span.split()) < ITEM1_MIN_WORDS:
             continue
-        span = text[m.end():nxt[0]]
-        if len(span) > len(best):
-            best = span
-    words = best.split()
-    return " ".join(words[:max_words]) if len(words) >= 300 else None
+        kept, n = [], 0
+        for line in span.splitlines():
+            head = line.strip()
+            if n >= ITEM1_MIN_WORDS and 0 < len(head.split()) <= 8 and BOILER_HEAD.match(head):
+                break
+            kept.append(line)
+            n += len(line.split())
+        words = " ".join(kept).split()
+        return " ".join(words[:max_words])
+    return None
 
 
-def edgar_texts(meta: dict, stocks: list[str], ua: str) -> tuple[dict[str, str], list[str]]:
-    """Item 1 of each company's latest 10-K, cached per accession number. Returns (texts, failed)."""
+def latest_10k(http, cik: int) -> tuple[str, str] | None:
+    """(accession number, primary document) of the newest 10-K. The 'recent' block lists only the last
+    ~1,000 filings, which for heavy filers (XOM) no longer reaches the 10-K, so older pages are read too."""
+    def find(block):
+        for i, form in enumerate(block.get("form", [])):
+            if form in ("10-K", "10-KT"):
+                return block["accessionNumber"][i], block["primaryDocument"][i]
+        return None
+
+    sub = http.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+    hit = find(sub["filings"]["recent"])
+    for page in sub["filings"].get("files", []):
+        if hit:
+            break
+        hit = find(http.get(f"https://data.sec.gov/submissions/{page['name']}").json())
+    return hit
+
+
+def edgar_texts(meta: dict, stocks: list[str], ua: str) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    """Item 1 of each company's latest 10-K. The filing's whole plain text is cached per accession
+    number, so extractor fixes re-run on the cache without refetching. Returns (texts, failed, reason)."""
     d = CACHE / "edgar"
     d.mkdir(parents=True, exist_ok=True)
+    for old in d.glob("*.txt.gz"):           # v2.1 caches held only the (often wrong) extracted span
+        if not old.name.endswith(".full.txt.gz"):
+            old.unlink()
     http = Polite(ua)
-    out, fails = {}, []
+    out, fails, why = {}, [], {}
     for n, t in enumerate(stocks, 1):
         cik = meta[t]["cik"]
-        if not cik:
-            fails.append(t)
-            continue
         try:
-            sub = http.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
-            rec = sub["filings"]["recent"]
-            i = next(i for i, f in enumerate(rec["form"]) if f in ("10-K", "10-KT"))
-            acc, doc = rec["accessionNumber"][i], rec["primaryDocument"][i]
-            f = d / f"{cik}_{acc}.txt.gz"
-            if f.exists():
-                out[t] = gzip.decompress(f.read_bytes()).decode()
-                continue
-            html = http.get(f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}").content
-            item1 = extract_item1(html_to_text(html))
-            if item1:
-                f.write_bytes(gzip.compress(item1.encode()))
-                out[t] = item1
+            hit = latest_10k(http, cik) if cik else None
+            if not hit:
+                why[t] = "no 10-K on EDGAR" if cik else "no CIK"
             else:
-                fails.append(t)
+                acc, doc = hit
+                f = d / f"{cik}_{acc}.full.txt.gz"
+                if f.exists():
+                    text = gzip.decompress(f.read_bytes()).decode()
+                else:
+                    text = html_to_text(http.get(f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}").content)
+                    f.write_bytes(gzip.compress(text.encode()))
+                item1 = extract_item1(text)
+                if item1:
+                    out[t] = item1
+                else:
+                    why[t] = "no Item 1 heading with 300+ words"
         except Exception as e:  # noqa: BLE001
-            log(f"  EDGAR {t}: {type(e).__name__}")
+            why[t] = type(e).__name__
+        if t in why:
             fails.append(t)
-        if n % 50 == 0:
+        if n % 100 == 0:
             log(f"  EDGAR {n}/{len(stocks)}")
-    return out, fails
+    return out, fails, why
+
+
+def text_quality(emb: np.ndarray, subs: list[str], sectors: list[str], k: int = 5) -> dict[str, float]:
+    """Sanity check for business embeddings: how often a stock's k nearest texts share its GICS
+    sub-industry / sector, and the median similarity percentile of same-sub-industry pairs."""
+    from scipy.stats import rankdata
+
+    S = emb @ emb.T
+    np.fill_diagonal(S, -np.inf)
+    nb = np.argsort(-S, axis=1)[:, :k]
+    subs_a, secs_a = np.array(subs), np.array(sectors)
+    iu = np.triu_indices(len(subs), 1)
+    pct = rankdata(S[iu]) / len(iu[0]) * 100
+    same = subs_a[iu[0]] == subs_a[iu[1]]
+    return {"sub": round(float((subs_a[nb] == subs_a[:, None]).mean()), 3),
+            "sector": round(float((secs_a[nb] == secs_a[:, None]).mean()), 3),
+            "sameSubPct": round(float(np.median(pct[same])), 1) if same.any() else float("nan")}
+
+
+def text_gate(q_edgar: dict, q_yahoo: dict) -> bool:
+    """True if the 10-K embeddings are fit to use: not clearly worse than Yahoo's on either check."""
+    return (q_edgar["sector"] >= q_yahoo["sector"] - TEXT_GATE_SECTOR
+            and q_edgar["sameSubPct"] >= q_yahoo["sameSubPct"] - TEXT_GATE_SUBPCT)
 
 
 def yahoo_texts(stocks: list[str]) -> dict[str, str]:
@@ -741,25 +808,61 @@ def main():
         time.sleep(0.2)
     log(f"market cap: {len(mcap)} of {int(is_stock.sum())} stocks after Yahoo fallback")
 
-    # ---- business text (stocks only): SEC 10-K Item 1, Yahoo only where EDGAR fails
+    # ---- business text (stocks only): SEC 10-K Item 1, Yahoo where EDGAR fails, and Yahoo for every
+    # company if tonight's 10-K embeddings are clearly worse than Yahoo's on the quality check
     stocks = [assets[i] for i in stock_idx]
     texts: dict[str, str] = {}
-    if ua and "@" in ua:
-        texts, failed = edgar_texts(meta, stocks, ua)
+    edgar_on = bool(ua and "@" in ua)
+    if edgar_on:
+        texts, failed, why = edgar_texts(meta, stocks, ua)
         log(f"EDGAR: Item 1 for {len(texts)} of {len(stocks)} companies")
+        for reason in sorted(set(why.values())):
+            log(f"  {reason}: {', '.join(t for t in failed if why[t] == reason)}")
+        if texts:
+            wc = {t: len(x.split()) for t, x in texts.items()}
+            short = sorted(t for t, w in wc.items() if w < 600)
+            log(f"  Item 1 words used: median {int(np.median(list(wc.values())))}, min {min(wc.values())}; "
+                f"{len(short)} under 600 words" + (f": {', '.join(short[:40])}{' ...' if len(short) > 40 else ''}" if short else ""))
+            for t in sorted({t for pr in TEXT_PROBES for t in pr} & set(texts)):
+                log(f"  {t:>5}: {' '.join(texts[t].split()[:16])} ...")
     else:
         failed = list(stocks)
         log("EDGAR: SEC_USER_AGENT not set (needs a contact email), so every company falls back to Yahoo")
-    yt = yahoo_texts(failed) if failed else {}
+    yt = yahoo_texts(stocks)          # every stock: the fallback, and the baseline for the quality check
     fallback = sorted(t for t in failed if t in yt)
     name_only = sorted(t for t in failed if t not in yt)
-    texts.update({t: yt[t] for t in fallback})
     log(f"business text: {len(stocks) - len(failed)} SEC 10-K, {len(fallback)} Yahoo fallback, {len(name_only)} name only")
-    if ua and fallback:
+    if edgar_on and fallback:
         log(f"  fell back to Yahoo: {', '.join(fallback)}")
-    text_src = {t: ("edgar" if t not in failed else "yahoo" if t in yt else "name") for t in stocks}
-    raw = [texts.get(t) or f"{meta[t]['name']}: {meta[t]['sub']}" for t in stocks]
-    emb = embed([clean_text(x, meta[t]["name"]) for x, t in zip(raw, stocks)])
+    stub = {t: f"{meta[t]['name']}: {meta[t]['sub']}" for t in stocks}
+
+    def embed_from(src: dict[str, str]) -> np.ndarray:
+        return embed([clean_text(src.get(t) or stub[t], meta[t]["name"]) for t in stocks])
+
+    emb = embed_from(yt)
+    text_src = {t: ("yahoo" if t in yt else "name") for t in stocks}
+    text_rejected, text_check = False, None
+    if texts:
+        emb_e = embed_from({**yt, **texts})
+        subs_st, secs_st = [meta[t]["sub"] for t in stocks], [meta[t]["sector"] for t in stocks]
+        q_e, q_y = text_quality(emb_e, subs_st, secs_st), text_quality(emb, subs_st, secs_st)
+        text_check = {"edgar": q_e, "yahoo": q_y}
+        log(f"text quality (top-5 neighbours sharing sub-industry / sector; median same-sub-industry pair pctl):\n"
+            f"  10-K  {q_e}\n  Yahoo {q_y}")
+        sidx, iu_q = {t: k for k, t in enumerate(stocks)}, np.triu_indices(len(stocks), 1)
+        tri_e, tri_y = (emb_e @ emb_e.T)[iu_q], (emb @ emb.T)[iu_q]
+        for x, y in TEXT_PROBES:
+            if x in sidx and y in sidx:
+                i_, j_ = sidx[x], sidx[y]
+                pe, py = (tri_e < emb_e[i_] @ emb_e[j_]).mean() * 100, (tri_y < emb[i_] @ emb[j_]).mean() * 100
+                log(f"  {x}-{y}: 10-K {pe:.1f} pctl, Yahoo {py:.1f} pctl")
+        if text_gate(q_e, q_y):
+            emb = emb_e
+            text_src = {t: ("edgar" if t in texts else text_src[t]) for t in stocks}
+        else:
+            text_rejected = True
+            log("  10-K text REJECTED by the quality check: Yahoo summaries are used for every company this run")
+    used_edgar = bool(texts) and not text_rejected
     S_st = emb @ emb.T
     S = np.full((N, N), np.nan)
     S[np.ix_(stock_idx, stock_idx)] = S_st
@@ -981,8 +1084,10 @@ def main():
         "mapStart": str(win.index[0].date()),
         "dates": [str(d.date()) for d in win.index],
         "years": years,
-        "textSource": "edgar" if len(failed) < len(stocks) else "yahoo",
-        "textFallback": fallback if len(failed) < len(stocks) else [],
+        "textSource": "edgar" if used_edgar else "yahoo",
+        "textFallback": fallback if used_edgar else [],
+        "textRejected": text_rejected,
+        "textCheck": text_check,
         "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
                      "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t in ix]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],
@@ -1060,7 +1165,9 @@ def main():
             verb = "Short" if beta2[j] > 0 else "Buy"
             log(f"    {verb} {abs(beta2[j]):.2f}x {assets[j]:<6} variance -{C_raw[k, j] ** 2:.0%}  1y beta {beta1[j]:.2f}"
                 f"  {'UNSTABLE' if unstable else 'stable'}")
-    log(f"\nbusiness text fallback to Yahoo: {len(failed)} of {len(stocks)} tickers")
+    log(f"\nbusiness text: {'SEC 10-K' if used_edgar else 'Yahoo'}"
+        + (f", {len(fallback)} of {len(stocks)} fell back to Yahoo" if used_edgar else "")
+        + (" (10-K text rejected by the quality check)" if text_rejected else ""))
     log(f"done in {time.time() - t0:.0f}s")
 
 

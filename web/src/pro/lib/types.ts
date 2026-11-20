@@ -51,6 +51,8 @@ export type ProData = {
   years: number[];
   textSource: "edgar" | "yahoo";
   textFallback: string[];
+  textRejected?: boolean; // 10-K text was built but failed the quality check against Yahoo, so Yahoo is used
+  textCheck?: Record<"edgar" | "yahoo", { sub: number; sector: number; sameSubPct: number }> | null;
   presets: { id: PresetId; label: string; factors: string[]; exposures: string[]; notPlotted: string[] }[];
   assets: Asset[];
   nnBiz: (NnBiz[] | null)[];
