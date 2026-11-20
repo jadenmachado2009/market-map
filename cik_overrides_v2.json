@@ -1,0 +1,4 @@
+{
+  "_about": "Ticker -> SEC CIK, checked before Wikipedia's CIK column. Use when Wikipedia's CIK points at a registrant that doesn't file the company's 10-K.",
+  "XOM": "0000034088"
+}

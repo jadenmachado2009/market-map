@@ -323,6 +323,86 @@ class TenKExtraction(unittest.TestCase):
         self.assertTrue(http.urls[1].endswith("CIK0000034088-submissions-001.json"))
 
 
+class V23TextRules(unittest.TestCase):
+    def test_cik_overrides_file(self):
+        o = p.load_cik_overrides()
+        self.assertEqual(o["XOM"], 34088)                       # "0000034088" in the file
+        self.assertFalse(any(k.startswith("_") for k in o))
+
+    def test_same_source_drops_mixed_pairs_only(self):
+        src = np.array(["edgar", "edgar", "yahoo", "yahoo", "name"])
+        si, sj = np.triu_indices(5, 1)
+        keep = p.same_source(src, si, sj)
+        for a, b, k in zip(si, sj, keep):
+            self.assertEqual(bool(k), src[a] == src[b])
+        self.assertEqual(int(keep.sum()), 2)                     # edgar-edgar and yahoo-yahoo
+
+    def test_custom_heading_extractor_for_annual_report_layouts(self):
+        doc = ("Contents\nOverview\n3\nManagement's Discussion and Analysis of Financial Condition\n12\n"
+               "Overview of our results is a long sentence, not a heading, " + _words("prose", 50) + "\n"
+               "OVERVIEW\n" + _words("bank", 420) + "\n"
+               "MANAGEMENT'S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS\n" + _words("mda", 900))
+        out = p.extract_by_headings(doc, ["overview"], ["management.?s discussion and analysis.*", "risk factors"])
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("bank0"))
+        self.assertNotIn("mda", out)
+        self.assertNotIn("prose", out)
+        self.assertIsNone(p.extract_by_headings(doc, ["our business"], ["risk factors"]))
+
+    def test_relaxed_rule_is_opt_in(self):
+        doc = (_words("toc", 20) + "\n2025 Form 10-K 3 ITEM 1. BUSINESS " + _words("ins", 400)
+               + " 2025 Form 10-K 9 ITEM 1A. RISK FACTORS " + _words("risk", 200))
+        self.assertIsNone(p.extract_item1(doc))                  # the strict rule needs a line-start heading
+        out = p.extract_item1(doc, relaxed=True)
+        self.assertIsNotNone(out)
+        self.assertTrue(out.startswith("ins0"))
+        self.assertNotIn("risk0", out)
+        cfg = p.load_extractors()
+        self.assertEqual(cfg["relaxed"], {"AIG", "EXC", "EXPE"})
+        self.assertEqual(set(cfg["custom"]), {"C", "MS", "GE", "HON", "INTC", "MCD"})
+
+    def test_lookup_trace_records_urls_and_responses(self):
+        class Resp:
+            status_code = 200
+            def json(self):
+                return {"name": "EXXONMOBIL HOLDINGS", "filings": {"recent": {"form": ["8-K", "4"],
+                        "accessionNumber": ["a", "b"], "primaryDocument": ["x", "y"]}, "files": []}}
+
+        class Http:
+            def get(self, url): return Resp()
+        trace = []
+        self.assertIsNone(p.latest_10k(Http(), 2115436, trace))
+        self.assertEqual(len(trace), 1)
+        self.assertIn("CIK0002115436.json -> HTTP 200", trace[0])
+        self.assertIn("EXXONMOBIL HOLDINGS", trace[0])
+        self.assertIn("8-K", trace[0])
+
+    def test_heading_dump_lists_structure(self):
+        doc = "PART I\nItem 1. Business\n" + _words("a", 40) + "\nOUR SEGMENTS\n" + _words("b", 30)
+        d = p.heading_dump(doc)
+        self.assertEqual([x.split("w  ")[1] for x in d], ["PART I", "Item 1. Business", "OUR SEGMENTS"])
+
+    def test_ticker_quality_and_gate(self):
+        rng = np.random.default_rng(3)
+        centres = rng.normal(size=(4, 16))
+        subs = [f"s{k // 10}" for k in range(40)]
+        secs = [f"S{k // 20}" for k in range(40)]
+        E = np.vstack([centres[k // 10] + 0.05 * rng.normal(size=16) for k in range(40)])
+        E /= np.linalg.norm(E, axis=1, keepdims=True)
+        tri = np.sort((E @ E.T)[np.triu_indices(40, 1)])
+        good = p.ticker_quality(E, 0, subs, secs, tri)
+        self.assertEqual((good["sub"], good["sector"]), (1.0, 1.0))
+        bad_E = E.copy()
+        bad_E[0] = centres[3] / np.linalg.norm(centres[3])      # ticker 0's text now reads like sub-industry 3
+        bad = p.ticker_quality(bad_E, 0, subs, secs, np.sort((bad_E @ bad_E.T)[np.triu_indices(40, 1)]))
+        self.assertTrue(p.ticker_gate(good, bad))
+        self.assertFalse(p.ticker_gate(bad, good))
+        one_off = {"sub": 0.8, "sector": 0.8, "sameSubPct": good["sameSubPct"] - 1}
+        self.assertTrue(p.ticker_gate(one_off, good))            # one neighbour of slack
+        self.assertTrue(p.ticker_gate({"sub": 0, "sector": 0.6, "sameSubPct": 50}, {"sub": 0, "sector": 0.8, "sameSubPct": 50}))
+        self.assertTrue(p.text_gate({"sub": 0, "sector": 0.74, "sameSubPct": 94}, {"sub": 0, "sector": 0.78, "sameSubPct": 97}))
+
+
 class TextQualityGate(unittest.TestCase):
     def test_quality_and_gate(self):
         rng = np.random.default_rng(1)

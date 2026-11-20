@@ -55,7 +55,7 @@ export type ProData = {
   textCheck?: Record<"edgar" | "yahoo", { sub: number; sector: number; sameSubPct: number }> | null;
   presets: { id: PresetId; label: string; factors: string[]; exposures: string[]; notPlotted: string[] }[];
   assets: Asset[];
-  nnBiz: (NnBiz[] | null)[];
+  nnBiz: (NnBiz[] | null)[]; // compared within the same text source; [] = fewer than 5 comparable stocks
   data: Record<PresetId, PresetData>;
 };
 

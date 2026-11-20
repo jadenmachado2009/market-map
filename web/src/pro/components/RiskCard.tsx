@@ -20,14 +20,15 @@ const Tick = ({ t, onPick, strong }: { t: string; onPick: (t: string) => void; s
   </button>
 );
 
-export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
+export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, textSource, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
   i: number;
   a: Asset;
   presetLabel: string;
   exposureNames: string[];
   exposure: number[] | null;
   nnBeh: NnBeh[] | null;
-  nnBiz: NnBiz[] | null;
+  nnBiz: NnBiz[] | null; // [] = fewer than 5 other stocks share this stock's text source
+  textSource: "edgar" | "yahoo";
   firstYear: number;
   matrix: PairMatrix | null;
   raw2: Corr;
@@ -49,6 +50,11 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
             {a.t} <span className="font-normal text-ink-2">{a.name}</span>
           </h2>
           <p className="text-xs text-ink-3">{a.cls === "stock" ? `${a.sector} · ${a.sub}` : a.sector}</p>
+          {a.cls === "stock" && textSource === "edgar" && a.text !== "edgar" && (
+            <p className="text-xs text-ink-3">
+              {a.text === "yahoo" ? "Business text: Yahoo (no usable 10-K)" : "Business text: name and industry only (no usable 10-K)"}
+            </p>
+          )}
         </div>
         <button type="button" onClick={onClose} aria-label="Close" className="rounded px-1.5 text-ink-3 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent">✕</button>
       </div>
@@ -93,7 +99,9 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
         </div>
         <div>
           <ListHead title="Reads like" />
-          {nnBiz ? (
+          {nnBiz && nnBiz.length === 0 ? (
+            <p className="text-xs text-ink-3">Not enough comparable text.</p>
+          ) : nnBiz ? (
             <ol className="space-y-0.5">
               {nnBiz.map(([t, pct]) => (
                 <li key={t} className="flex items-baseline justify-between gap-1 tabular-nums">

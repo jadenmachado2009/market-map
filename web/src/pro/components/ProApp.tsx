@@ -284,6 +284,7 @@ export default function ProApp({ data }: { data: ProData }) {
             exposure={P.exposure[sel]}
             nnBeh={P.nnBeh[sel]}
             nnBiz={data.nnBiz[sel]}
+            textSource={data.textSource}
             firstYear={data.years[0]}
             matrix={matrix}
             raw2={raw?.get ?? null}

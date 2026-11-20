@@ -1,0 +1,21 @@
+{
+  "_about": "Item 1 (Business) extraction exceptions. 'custom': filers whose 10-K has no usable 'Item 1. Business' heading (annual-report style layouts); a section starts at a line whose whole text matches a 'start' pattern and ends at the next line matching an 'end' pattern (regex, case-insensitive, full line); the first section with 300+ words wins. 'relaxed': tickers allowed the relaxed Item 1 heading rule. Every custom or relaxed extraction must beat that ticker's Yahoo summary on the quality check, or it stays on Yahoo.",
+  "custom": {
+    "C": {"start": ["overview"], "end": ["management.?s discussion and analysis.*", "executive summary", "risk factors"],
+          "why": "Citi files its annual report as the 10-K; the business description sits under 'Overview' with a cross-reference index instead of Item headings"},
+    "MS": {"start": ["business"], "end": ["risk factors"],
+           "why": "Morgan Stanley's body headings are 'Business' / 'Risk Factors' without Item numbers"},
+    "GE": {"start": ["about ge aerospace", "our businesses", "business overview", "our segments?"],
+           "end": ["risk factors", "management.?s discussion and analysis.*", "results of operations", "key performance indicators.*"],
+           "why": "GE uses a cross-reference index; the business is described under its own section names"},
+    "HON": {"start": ["(item\\s*1\\.?\\s*)?business"], "end": ["(item\\s*1a\\.?\\s*)?risk factors"],
+            "why": "Heading not found by the line-start rule; match 'Business' as a stand-alone heading line"},
+    "INTC": {"start": ["our business", "fundamentals of our business", "business overview", "introduction"],
+             "end": ["risk factors.*", "management.?s discussion and analysis.*"],
+             "why": "Intel's 10-K is organised by its own sections with a cross-reference index"},
+    "MCD": {"start": ["(item\\s*1\\.?\\s*)?business(\\s+summary)?", "general"],
+            "end": ["(item\\s*1a\\.?\\s*)?risk factors", "(item\\s*1b\\.?\\s*)?unresolved staff comments"],
+            "why": "Heading not found by the line-start rule; match the stand-alone heading lines"}
+  },
+  "relaxed": ["AIG", "EXC", "EXPE"]
+}

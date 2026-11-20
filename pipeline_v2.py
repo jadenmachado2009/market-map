@@ -42,6 +42,8 @@ OUT_JSON = ROOT / "web" / "src" / "data-pro" / "market_map_v2.json"
 OUT_BIN = ROOT / "web" / "public" / "pro-data"
 LABELS_FILE = ROOT / "cluster_labels_v2.json"
 THEMES_FILE = ROOT / "pair_themes_v2.json"
+CIK_OVERRIDES_FILE = ROOT / "cik_overrides_v2.json"      # checked before Wikipedia's ticker -> CIK column
+EXTRACTORS_FILE = ROOT / "item1_extractors_v2.json"      # per-ticker Item 1 extractors and the relaxed-rule list
 
 SEED = 42
 START = "2016-01-01"
@@ -245,6 +247,13 @@ def sig5(v) -> float | None:
 
 # ----------------------------------------------------------------------------- data
 
+def load_cik_overrides(path: Path = CIK_OVERRIDES_FILE) -> dict[str, int]:
+    """{ticker: CIK} from cik_overrides_v2.json; keys starting with '_' are comments."""
+    if not path.exists():
+        return {}
+    return {t: int(str(v)) for t, v in json.loads(path.read_text()).items() if not t.startswith("_")}
+
+
 def load_universe():
     import pandas as pd
     import requests
@@ -254,10 +263,14 @@ def load_universe():
     t = pd.read_html(StringIO(html))[0]
     t["Symbol"] = t["Symbol"].str.replace(".", "-", regex=False)
     t = t.set_index("Symbol")
+    overrides = load_cik_overrides()
     meta = {}
     for sym, row in t.iterrows():
+        wiki = int(row["CIK"]) if not pd.isna(row["CIK"]) else None
         meta[sym] = {"name": row["Security"], "cls": "stock", "sector": row["GICS Sector"],
-                     "sub": row["GICS Sub-Industry"], "cik": int(row["CIK"]) if not pd.isna(row["CIK"]) else None}
+                     "sub": row["GICS Sub-Industry"], "cik": overrides.get(sym, wiki)}
+        if sym in overrides and overrides[sym] != wiki:
+            log(f"CIK override: {sym} {wiki} (Wikipedia) -> {overrides[sym]}")
     for cls, ticks in CROSS.items():
         for sym in ticks:
             meta[sym] = {"name": CROSS_NAMES[sym], "cls": cls, "sector": CLASS_LABEL[cls], "sub": CLASS_LABEL[cls], "cik": None}
@@ -371,84 +384,177 @@ def html_to_text(html: bytes) -> str:
     return re.sub(r"\n\s*\n+", "\n", text)
 
 
-def extract_item1(text: str, max_words: int = ITEM1_WORDS) -> str | None:
+def _trim_section(span: str, max_words: int) -> str:
+    """Stop at the first boilerplate sub-heading once ITEM1_MIN_WORDS are in, then cap at max_words."""
+    kept, n = [], 0
+    for line in span.splitlines():
+        head = line.strip()
+        if n >= ITEM1_MIN_WORDS and 0 < len(head.split()) <= 8 and BOILER_HEAD.match(head):
+            break
+        kept.append(line)
+        n += len(line.split())
+    return " ".join(" ".join(kept).split()[:max_words])
+
+
+# Relaxed rule (named tickers only): the Item 1 heading may sit anywhere in a line, e.g. after a running
+# page header ("2025 Form 10-K  3  ITEM 1. BUSINESS"); the section still needs 300+ words.
+ITEM1_ANY = re.compile(r"\bitems?\s*1\s*(?:(?:and|&|,)\s*2\s*)?[\.:\-–—]?\s*(?:description\s+of\s+(?:the\s+)?)?business\b"
+                       r"(?:\s*(?:and|&)\s*properties\b)?", re.I)
+ITEM1A_ANY = re.compile(r"\bitem\s*1a\s*[\.:\-–—]?\s*risk\s*factors", re.I)
+
+
+def extract_item1(text: str, max_words: int = ITEM1_WORDS, relaxed: bool = False) -> str | None:
     """Item 1 (Business) of a 10-K's plain text. Takes the FIRST line-start 'Item 1. Business' heading
     whose section (up to the next line-start Item 1A/1B/1C/2/3 heading) has 300+ words, so the table of
     contents (a few words) is skipped and cross-references can't start a span. Stops at the first
     boilerplate sub-heading (regulation, human capital, executive officers...) once 300 words are in,
-    then caps at max_words. None if no section qualifies."""
+    then caps at max_words. None if no section qualifies. relaxed=True (named tickers only) also accepts
+    a heading in mid-line and, if no line-start end heading follows, an inline 'Item 1A. Risk Factors'."""
     ends = [m.start() for m in ITEM_END.finditer(text)]
-    for m in ITEM1.finditer(text):
-        nxt = [e for e in ends if e > m.end()]
+    inline_ends = [m.start() for m in ITEM1A_ANY.finditer(text)] if relaxed else []
+    for m in (ITEM1_ANY if relaxed else ITEM1).finditer(text):
+        nxt = [e for e in ends if e > m.end()] or [e for e in inline_ends if e > m.end()]
         span = text[m.end():nxt[0]] if nxt else ""
-        if len(span.split()) < ITEM1_MIN_WORDS:
-            continue
-        kept, n = [], 0
-        for line in span.splitlines():
-            head = line.strip()
-            if n >= ITEM1_MIN_WORDS and 0 < len(head.split()) <= 8 and BOILER_HEAD.match(head):
-                break
-            kept.append(line)
-            n += len(line.split())
-        words = " ".join(kept).split()
-        return " ".join(words[:max_words])
+        if len(span.split()) >= ITEM1_MIN_WORDS:
+            return _trim_section(span, max_words)
     return None
 
 
-def latest_10k(http, cik: int) -> tuple[str, str] | None:
+def extract_by_headings(text: str, starts: list[str], ends: list[str], max_words: int = ITEM1_WORDS) -> str | None:
+    """Custom extractor for filers whose 10-K has no usable 'Item 1. Business' heading (annual-report
+    style filings). A start or end heading is a line whose whole stripped text matches one of the
+    patterns (case-insensitive). Takes the first start whose section has 300+ words."""
+    sp = [re.compile(x, re.I) for x in starts]
+    ep = [re.compile(x, re.I) for x in ends]
+    lines = text.splitlines()
+    heads = [ln.strip() for ln in lines]
+    s_idx = [k for k, h in enumerate(heads) if h and any(r.fullmatch(h) for r in sp)]
+    e_idx = [k for k, h in enumerate(heads) if h and any(r.fullmatch(h) for r in ep)]
+    for k in s_idx:
+        e = next((x for x in e_idx if x > k), None)
+        if e is None:
+            continue
+        span = "\n".join(lines[k + 1:e])
+        if len(span.split()) >= ITEM1_MIN_WORDS:
+            return _trim_section(span, max_words)
+    return None
+
+
+HEADING_HINT = re.compile(r"\bitem\s*\d|\bpart\s+i|business|overview|risk\s+factors|management.s\s+discussion|segment"
+                          r"|our\s+compan|about\s|introduction|general|products|cross.?reference", re.I)
+
+
+def heading_dump(text: str, limit: int = 70) -> list[str]:
+    """Heading-like lines of a filing (short lines naming items, parts or business sections) with their
+    word offset, for writing custom extractors from CI logs."""
+    out, words = [], 0
+    for line in text.splitlines():
+        h = " ".join(line.split())
+        n = len(h.split())
+        if 0 < n <= 12 and (HEADING_HINT.search(h) or (h.isupper() and len(h) > 3)):
+            out.append(f"@{words:>6}w  {h[:110]}")
+            if len(out) >= limit:
+                break
+        words += n
+    return out
+
+
+def load_extractors(path: Path = EXTRACTORS_FILE) -> dict:
+    """{'custom': {ticker: {'start': [...], 'end': [...], 'why': str}}, 'relaxed': set of tickers}"""
+    cfg = json.loads(path.read_text()) if path.exists() else {}
+    return {"custom": {t: v for t, v in cfg.get("custom", {}).items() if not t.startswith("_")},
+            "relaxed": set(cfg.get("relaxed", []))}
+
+
+def latest_10k(http, cik: int, trace: list | None = None) -> tuple[str, str] | None:
     """(accession number, primary document) of the newest 10-K. The 'recent' block lists only the last
-    ~1,000 filings, which for heavy filers (XOM) no longer reaches the 10-K, so older pages are read too."""
+    ~1,000 filings, which for heavy filers no longer reaches the 10-K, so older pages are read too.
+    `trace` collects every URL with its HTTP status and what came back (entity name, forms seen)."""
     def find(block):
         for i, form in enumerate(block.get("form", [])):
             if form in ("10-K", "10-KT"):
                 return block["accessionNumber"][i], block["primaryDocument"][i]
         return None
 
-    sub = http.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+    def fetch(url):
+        try:
+            r = http.get(url)
+        except Exception as e:  # noqa: BLE001
+            resp = getattr(e, "response", None)
+            if trace is not None:
+                trace.append(f"{url} -> {getattr(resp, 'status_code', type(e).__name__)}")
+            raise
+        d = r.json()
+        if trace is not None:
+            forms = d.get("filings", {}).get("recent", d).get("form", [])
+            trace.append(f"{url} -> HTTP {getattr(r, 'status_code', 200)}; entity {d.get('name', '?')!r}; "
+                         f"{len(forms)} filings, forms seen: {', '.join(sorted(set(forms))[:12])}")
+        return d
+
+    sub = fetch(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
     hit = find(sub["filings"]["recent"])
     for page in sub["filings"].get("files", []):
         if hit:
             break
-        hit = find(http.get(f"https://data.sec.gov/submissions/{page['name']}").json())
+        hit = find(fetch(f"https://data.sec.gov/submissions/{page['name']}"))
     return hit
 
 
-def edgar_texts(meta: dict, stocks: list[str], ua: str) -> tuple[dict[str, str], list[str], dict[str, str]]:
+def edgar_texts(meta: dict, stocks: list[str], ua: str, extractors: dict | None = None, debug: set | None = None):
     """Item 1 of each company's latest 10-K. The filing's whole plain text is cached per accession
-    number, so extractor fixes re-run on the cache without refetching. Returns (texts, failed, reason)."""
+    number, so extractor fixes re-run on the cache without refetching. Custom extractors replace the
+    standard rule for their tickers; 'relaxed' tickers try the standard rule, then the relaxed one.
+    Returns (texts, failed, reason, mode, dumps, traces): mode is how each text was extracted; dumps hold
+    heading lines for `debug` tickers; traces hold URL/HTTP lines for every lookup that failed."""
+    extractors = extractors or {"custom": {}, "relaxed": set()}
+    debug = debug or set()
     d = CACHE / "edgar"
     d.mkdir(parents=True, exist_ok=True)
     for old in d.glob("*.txt.gz"):           # v2.1 caches held only the (often wrong) extracted span
         if not old.name.endswith(".full.txt.gz"):
             old.unlink()
     http = Polite(ua)
-    out, fails, why = {}, [], {}
+    out, fails, why, mode, dumps, traces = {}, [], {}, {}, {}, {}
     for n, t in enumerate(stocks, 1):
-        cik = meta[t]["cik"]
+        cik, trace = meta[t]["cik"], []
         try:
-            hit = latest_10k(http, cik) if cik else None
+            hit = latest_10k(http, cik, trace) if cik else None
             if not hit:
                 why[t] = "no 10-K on EDGAR" if cik else "no CIK"
+                traces[t] = trace
             else:
                 acc, doc = hit
+                url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}"
                 f = d / f"{cik}_{acc}.full.txt.gz"
                 if f.exists():
                     text = gzip.decompress(f.read_bytes()).decode()
                 else:
-                    text = html_to_text(http.get(f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}").content)
+                    trace.append(url)
+                    text = html_to_text(http.get(url).content)
                     f.write_bytes(gzip.compress(text.encode()))
-                item1 = extract_item1(text)
-                if item1:
-                    out[t] = item1
+                if t in extractors["custom"]:
+                    c = extractors["custom"][t]
+                    item1, how = extract_by_headings(text, c["start"], c["end"]), "custom"
                 else:
-                    why[t] = "no Item 1 heading with 300+ words"
+                    item1, how = extract_item1(text), "standard"
+                    if not item1 and t in extractors["relaxed"]:
+                        item1, how = extract_item1(text, relaxed=True), "relaxed"
+                if item1:
+                    out[t], mode[t] = item1, how
+                else:
+                    why[t] = {"custom": "custom extractor found no 300+ word section",
+                              "relaxed": "no Item 1 section even with the relaxed rule"}.get(how, "no Item 1 heading with 300+ words")
+                if t in debug:
+                    dumps[t] = [f"{url}  ({len(text.split())} words)"] + heading_dump(text)
         except Exception as e:  # noqa: BLE001
-            why[t] = type(e).__name__
+            resp = getattr(e, "response", None)
+            why[t] = f"{type(e).__name__}" + (f" HTTP {resp.status_code}" if resp is not None else "")
+            traces[t] = trace
         if t in why:
             fails.append(t)
         if n % 100 == 0:
             log(f"  EDGAR {n}/{len(stocks)}")
-    return out, fails, why
+    return out, fails, why, mode, dumps, traces
 
 
 def text_quality(emb: np.ndarray, subs: list[str], sectors: list[str], k: int = 5) -> dict[str, float]:
@@ -468,10 +574,43 @@ def text_quality(emb: np.ndarray, subs: list[str], sectors: list[str], k: int = 
             "sameSubPct": round(float(np.median(pct[same])), 1) if same.any() else float("nan")}
 
 
+TICKER_GATE_SECTOR = 0.2   # per ticker the sector share moves in steps of 1/5: allow one neighbour
+
+
+def ticker_quality(E: np.ndarray, i: int, subs: list[str], sectors: list[str], tri_sorted: np.ndarray, k: int = 5) -> dict:
+    """The gate's checks for one stock: share of its k nearest texts in its sub-industry / sector, and the
+    median similarity percentile (among all pairs, tri_sorted) of its same-sub-industry peers (sector
+    peers if it has none)."""
+    s = E @ E[i]
+    s[i] = -np.inf
+    nb = np.argsort(-s)[:k]
+    peers = [j for j in range(len(subs)) if j != i and subs[j] == subs[i]] or \
+            [j for j in range(len(subs)) if j != i and sectors[j] == sectors[i]]
+    pct = np.searchsorted(tri_sorted, s[peers]) / len(tri_sorted) * 100 if peers else np.array([np.nan])
+    return {"sub": round(float(np.mean([subs[j] == subs[i] for j in nb])), 2),
+            "sector": round(float(np.mean([sectors[j] == sectors[i] for j in nb])), 2),
+            "sameSubPct": round(float(np.median(pct)), 1)}
+
+
+def ticker_gate(q_edgar: dict, q_yahoo: dict) -> bool:
+    """Per-ticker version of text_gate for custom and relaxed extractions: its 10-K text may not make it
+    clearly worse than its own Yahoo summary (one neighbour of sector slack; same 3-point median rule)."""
+    eps = 1e-9                                  # 0.6 >= 0.8 - 0.2 is False in floating point
+    return (q_edgar["sector"] >= q_yahoo["sector"] - TICKER_GATE_SECTOR - eps
+            and q_edgar["sameSubPct"] >= q_yahoo["sameSubPct"] - TEXT_GATE_SUBPCT - eps)
+
+
+def same_source(src: np.ndarray, si: np.ndarray, sj: np.ndarray) -> np.ndarray:
+    """True for pairs whose business texts come from the same source: a 10-K vs Yahoo pair reads
+    artificially unlike, so it can't be a Lookalike or a Hidden twin."""
+    return src[si] == src[sj]
+
+
 def text_gate(q_edgar: dict, q_yahoo: dict) -> bool:
     """True if the 10-K embeddings are fit to use: not clearly worse than Yahoo's on either check."""
-    return (q_edgar["sector"] >= q_yahoo["sector"] - TEXT_GATE_SECTOR
-            and q_edgar["sameSubPct"] >= q_yahoo["sameSubPct"] - TEXT_GATE_SUBPCT)
+    eps = 1e-9
+    return (q_edgar["sector"] >= q_yahoo["sector"] - TEXT_GATE_SECTOR - eps
+            and q_edgar["sameSubPct"] >= q_yahoo["sameSubPct"] - TEXT_GATE_SUBPCT - eps)
 
 
 def yahoo_texts(stocks: list[str]) -> dict[str, str]:
@@ -514,8 +653,9 @@ def clean_text(t: str, name: str) -> str:
     return t
 
 
-def embed(texts: list[str], words: int = 200, max_chunks: int = 20) -> np.ndarray:
-    """Mean of chunk embeddings, so long Item 1 sections aren't cut at 256 tokens."""
+def embed_raw(texts: list[str], words: int = 200, max_chunks: int = 20) -> np.ndarray:
+    """Mean of chunk embeddings per text (long Item 1 sections aren't cut at 256 tokens). Uncentred, so
+    rows from different runs can be mixed before finish_embedding."""
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
@@ -527,9 +667,17 @@ def embed(texts: list[str], words: int = 200, max_chunks: int = 20) -> np.ndarra
         owner += [i] * len(pieces)
     E = model.encode(chunks, normalize_embeddings=True, batch_size=64, show_progress_bar=False).astype(np.float64)
     owner = np.array(owner)
-    out = np.vstack([E[owner == i].mean(0) for i in range(len(texts))])
-    out -= out.mean(0)  # remove the average description
+    return np.vstack([E[owner == i].mean(0) for i in range(len(texts))])
+
+
+def finish_embedding(R: np.ndarray) -> np.ndarray:
+    """Remove the average description, then unit length."""
+    out = R - R.mean(0)
     return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+
+def embed(texts: list[str], words: int = 200, max_chunks: int = 20) -> np.ndarray:
+    return finish_embedding(embed_raw(texts, words, max_chunks))
 
 
 def shares_outstanding(ua: str) -> dict[int, float]:
@@ -808,61 +956,99 @@ def main():
         time.sleep(0.2)
     log(f"market cap: {len(mcap)} of {int(is_stock.sum())} stocks after Yahoo fallback")
 
-    # ---- business text (stocks only): SEC 10-K Item 1, Yahoo where EDGAR fails, and Yahoo for every
-    # company if tonight's 10-K embeddings are clearly worse than Yahoo's on the quality check
+    # ---- business text (stocks only): SEC 10-K Item 1, Yahoo where EDGAR fails. Custom and relaxed
+    # extractions must each beat their own Yahoo summary on the gate's checks; then the whole 10-K set
+    # must not be clearly worse than all-Yahoo, or every company uses Yahoo this run.
     stocks = [assets[i] for i in stock_idx]
+    sidx = {t: k for k, t in enumerate(stocks)}
+    extractors = load_extractors()
+    special = set(extractors["custom"]) | extractors["relaxed"]
+    overridden = set(load_cik_overrides())
     texts: dict[str, str] = {}
+    mode: dict[str, str] = {}
+    why: dict[str, str] = {}
+    dumps: dict[str, list[str]] = {}
     edgar_on = bool(ua and "@" in ua)
     if edgar_on:
-        texts, failed, why = edgar_texts(meta, stocks, ua)
-        log(f"EDGAR: Item 1 for {len(texts)} of {len(stocks)} companies")
-        for reason in sorted(set(why.values())):
-            log(f"  {reason}: {', '.join(t for t in failed if why[t] == reason)}")
+        texts, failed, why, mode, dumps, traces = edgar_texts(meta, stocks, ua, extractors, debug=special | overridden)
+        log(f"EDGAR: Item 1 for {len(texts)} of {len(stocks)} companies "
+            f"({sum(v == 'custom' for v in mode.values())} custom, {sum(v == 'relaxed' for v in mode.values())} relaxed)")
+        for t, tr in sorted(traces.items()):
+            log(f"  {t} lookup failed ({why[t]}):")
+            for line in tr:
+                log(f"    {line}")
         if texts:
             wc = {t: len(x.split()) for t, x in texts.items()}
             short = sorted(t for t, w in wc.items() if w < 600)
             log(f"  Item 1 words used: median {int(np.median(list(wc.values())))}, min {min(wc.values())}; "
                 f"{len(short)} under 600 words" + (f": {', '.join(short[:40])}{' ...' if len(short) > 40 else ''}" if short else ""))
-            for t in sorted({t for pr in TEXT_PROBES for t in pr} & set(texts)):
-                log(f"  {t:>5}: {' '.join(texts[t].split()[:16])} ...")
+            for t in sorted(({t for pr in TEXT_PROBES for t in pr} | special | overridden) & set(texts)):
+                log(f"  {t:>5} [{mode[t]}, {wc[t]} words]: {' '.join(texts[t].split()[:16])} ...")
     else:
         failed = list(stocks)
         log("EDGAR: SEC_USER_AGENT not set (needs a contact email), so every company falls back to Yahoo")
-    yt = yahoo_texts(stocks)          # every stock: the fallback, and the baseline for the quality check
-    fallback = sorted(t for t in failed if t in yt)
-    name_only = sorted(t for t in failed if t not in yt)
-    log(f"business text: {len(stocks) - len(failed)} SEC 10-K, {len(fallback)} Yahoo fallback, {len(name_only)} name only")
-    if edgar_on and fallback:
-        log(f"  fell back to Yahoo: {', '.join(fallback)}")
+    yt = yahoo_texts(stocks)          # every stock: the fallback, and the baseline for the quality checks
     stub = {t: f"{meta[t]['name']}: {meta[t]['sub']}" for t in stocks}
-
-    def embed_from(src: dict[str, str]) -> np.ndarray:
-        return embed([clean_text(src.get(t) or stub[t], meta[t]["name"]) for t in stocks])
-
-    emb = embed_from(yt)
-    text_src = {t: ("yahoo" if t in yt else "name") for t in stocks}
+    raw_y = embed_raw([clean_text(yt.get(t) or stub[t], meta[t]["name"]) for t in stocks])
+    emb_y = finish_embedding(raw_y)
+    emb = emb_y
+    subs_st, secs_st = [meta[t]["sub"] for t in stocks], [meta[t]["sector"] for t in stocks]
+    iu_q = np.triu_indices(len(stocks), 1)
     text_rejected, text_check = False, None
     if texts:
-        emb_e = embed_from({**yt, **texts})
-        subs_st, secs_st = [meta[t]["sub"] for t in stocks], [meta[t]["sector"] for t in stocks]
-        q_e, q_y = text_quality(emb_e, subs_st, secs_st), text_quality(emb, subs_st, secs_st)
+        korder = sorted(texts, key=sidx.get)
+        raw_k = dict(zip(korder, embed_raw([clean_text(texts[t], meta[t]["name"]) for t in korder])))
+
+        def combo(use: set) -> np.ndarray:
+            R = raw_y.copy()
+            for t in use:
+                R[sidx[t]] = raw_k[t]
+            return finish_embedding(R)
+
+        use = set(texts)
+        E_all = combo(use)
+        tri_e, tri_y = np.sort((E_all @ E_all.T)[iu_q]), np.sort((emb_y @ emb_y.T)[iu_q])
+        for t in sorted(t for t in use if mode.get(t) in ("custom", "relaxed")):
+            qe = ticker_quality(E_all, sidx[t], subs_st, secs_st, tri_e)
+            qy = ticker_quality(emb_y, sidx[t], subs_st, secs_st, tri_y)
+            ok = ticker_gate(qe, qy)
+            log(f"  quality check {t} [{mode[t]}]: 10-K {qe} vs Yahoo {qy} -> {'pass' if ok else 'FAIL, stays on Yahoo'}")
+            if not ok:
+                use.discard(t)
+                why[t] = (f"{mode[t]} extractor failed the quality check (10-K: sector {qe['sector']}, same-industry "
+                          f"{qe['sameSubPct']} pctl vs Yahoo {qy['sector']}, {qy['sameSubPct']})")
+                failed.append(t)
+        texts = {t: texts[t] for t in use}
+        emb_e = combo(use)
+        q_e = text_quality(emb_e, subs_st, secs_st)
+        q_y = text_quality(emb_y, subs_st, secs_st)
         text_check = {"edgar": q_e, "yahoo": q_y}
         log(f"text quality (top-5 neighbours sharing sub-industry / sector; median same-sub-industry pair pctl):\n"
             f"  10-K  {q_e}\n  Yahoo {q_y}")
-        sidx, iu_q = {t: k for k, t in enumerate(stocks)}, np.triu_indices(len(stocks), 1)
-        tri_e, tri_y = (emb_e @ emb_e.T)[iu_q], (emb @ emb.T)[iu_q]
+        tri_e, tri_y = (emb_e @ emb_e.T)[iu_q], (emb_y @ emb_y.T)[iu_q]
         for x, y in TEXT_PROBES:
             if x in sidx and y in sidx:
                 i_, j_ = sidx[x], sidx[y]
-                pe, py = (tri_e < emb_e[i_] @ emb_e[j_]).mean() * 100, (tri_y < emb[i_] @ emb[j_]).mean() * 100
+                pe, py = (tri_e < emb_e[i_] @ emb_e[j_]).mean() * 100, (tri_y < emb_y[i_] @ emb_y[j_]).mean() * 100
                 log(f"  {x}-{y}: 10-K {pe:.1f} pctl, Yahoo {py:.1f} pctl")
         if text_gate(q_e, q_y):
             emb = emb_e
-            text_src = {t: ("edgar" if t in texts else text_src[t]) for t in stocks}
         else:
             text_rejected = True
+            texts = {}
             log("  10-K text REJECTED by the quality check: Yahoo summaries are used for every company this run")
-    used_edgar = bool(texts) and not text_rejected
+    fallback = sorted(t for t in stocks if t not in texts and t in yt)
+    name_only = sorted(t for t in stocks if t not in texts and t not in yt)
+    text_src = {t: ("edgar" if t in texts else "yahoo" if t in yt else "name") for t in stocks}
+    log(f"business text: {len(texts)} SEC 10-K, {len(fallback)} Yahoo fallback, {len(name_only)} name only")
+    if edgar_on and texts:
+        for t in fallback:
+            log(f"  {t:>5} on Yahoo: {why.get(t, 'no 10-K text')}")
+        for t in sorted(set(dumps) - set(texts)):          # what the filing looks like, for writing an extractor
+            log(f"  {t} heading dump:")
+            for line in dumps[t]:
+                log(f"    {line}")
+    used_edgar = bool(texts)
     S_st = emb @ emb.T
     S = np.full((N, N), np.nan)
     S[np.ix_(stock_idx, stock_idx)] = S_st
@@ -978,6 +1164,8 @@ def main():
 
     # ---- pass 2: clusters, neighbours, lists, exports
     out_presets, report = {}, {}
+    src_arr = np.array([text_src.get(t, "") for t in assets])
+    mixed_report: dict = {}
     si, sj = np.triu_indices(N, 1)
     cik = np.array([meta[t]["cik"] or -(k + 1) for k, t in enumerate(assets)])
     distinct = cik[si] != cik[sj]            # GOOG/GOOGL, FOX/FOXA, NWS/NWSA are one company
@@ -1019,9 +1207,12 @@ def main():
         cand = np.where(is_stock[si] & is_stock[sj] & inp[si] & inp[sj] & distinct)[0]
         stable = stable_pair(kk, nn, n_years)
         hc = cand[(pc[cand] > np.quantile(pc[cand], TOP_Q)) & stable[cand]]
-        hidden = hc[np.argsort(ps[hc])[:N_LIST]]
         hs = cand[(ps[cand] > np.quantile(ps[cand], TOP_Q)) & stable[cand]]
-        apart = hs[np.argsort(pc[hs])[:N_LIST]]
+        mixed = ~same_source(src_arr, si, sj)       # one side 10-K, the other Yahoo: reads unlike for that reason alone
+        hidden = hc[~mixed[hc]][np.argsort(ps[hc[~mixed[hc]]])[:N_LIST]]
+        apart = hs[~mixed[hs]][np.argsort(pc[hs[~mixed[hs]]])[:N_LIST]]
+        if p == "mkt":
+            mixed_report = {"hidden": (hc[np.argsort(ps[hc])[:N_LIST]], hidden), "apart": (hs[np.argsort(pc[hs])[:N_LIST]], apart)}
 
         def pair(q):
             a, b = assets[si[q]], assets[sj[q]]
@@ -1066,14 +1257,20 @@ def main():
             upper(K).astype(np.uint8).tofile(f)
             upper(Nw).astype(np.uint8).tofile(f)
 
+    # "Reads like" compares texts of the same source only (10-K with 10-K, Yahoo with Yahoo); an empty
+    # list means fewer than 5 other stocks share this stock's source ("Not enough comparable text").
     nn_biz = []
     for i in range(N):
         if not is_stock[i]:
             nn_biz.append(None)
             continue
+        peers = is_stock & (src_arr == src_arr[i])
+        peers[i] = False
+        if peers.sum() < 5:
+            nn_biz.append([])
+            continue
         row = S[i].copy()
-        row[i] = -np.inf
-        row[~is_stock] = -np.inf
+        row[~peers] = -np.inf
         nn_biz.append([[assets[j], round(float(P[i, j]), 1)] for j in np.argsort(-row)[:5]])
 
     beta_mkt = residualize(R2, win[["SPY"]].to_numpy())[1][0]
@@ -1112,6 +1309,18 @@ def main():
         for r in P_["hidden"][:10]:
             log(f"    {r['a']:>6} {r['b']:<6} {r['corr']:.2f}  held {r['k']}/{r['n']}  [{r['theme']}]  "
                 f"({meta[r['a']]['sub']} / {meta[r['b']]['sub']})")
+    log("\nMIXED-SOURCE RULE (Market): pairs with one 10-K and one Yahoo text are dropped from the lists")
+    for name, (before, after) in mixed_report.items():
+        gone = [q for q in before if q not in set(after)]
+        fmt_p = lambda q: f"{assets[si[q]]}-{assets[sj[q]]}"  # noqa: E731
+        log(f"  {'Hidden twins' if name == 'hidden' else 'Lookalikes'}: {len(gone)} of the top {len(before)} dropped"
+            + (f" ({', '.join(fmt_p(q) + ' [' + src_arr[si[q]] + '/' + src_arr[sj[q]] + ']' for q in gone)})" if gone else ""))
+        log(f"    before: {', '.join(fmt_p(q) for q in before[:10])}")
+        log(f"    after:  {', '.join(fmt_p(q) for q in after[:10])}")
+    for t in ("XOM", "KKR"):
+        if t in ix and nn_biz[ix[t]] is not None:
+            log(f"  {t} reads like [{text_src.get(t)}]: " + (", ".join(f"{a} {v}" for a, v in nn_biz[ix[t]]) or "not enough comparable text"))
+
     log("\nDECOUPLING (Fisher z, one-sided, BH q = 0.05)")
     for p, P_ in report.items():
         log(f"  [{PRESET_LABEL[p]}] tested {P_['decoupleTested']}, passed {len(P_['decouple'])}")
