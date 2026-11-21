@@ -1,7 +1,12 @@
 """Tests for the pure-math parts of pipeline_v2.py.  Run:  python -m unittest discover tests_v2"""
+import json
 import sys
+import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -496,6 +501,120 @@ class ReadsLikeYahoo(unittest.TestCase):
         self.assertEqual(p.reads_like_yahoo(self.E, self.have, [0], self.names, min_pool=11), {"S0": []})
         self.assertEqual(len(p.reads_like_yahoo(self.E, self.have, [0], self.names, min_pool=10)["S0"]), 5)
         self.assertEqual(p.reads_like_yahoo(self.E, self.have, [5], self.names, min_pool=5), {"S5": []})
+
+
+class ShareClasses(unittest.TestCase):
+    """v2.4.1: tickers sharing a CIK are one company and keep only the most-traded class."""
+    meta = {"GOOGL": {"cls": "stock", "cik": 1}, "GOOG": {"cls": "stock", "cik": 1},
+            "FOXA": {"cls": "stock", "cik": 2}, "FOX": {"cls": "stock", "cik": 2},
+            "AAPL": {"cls": "stock", "cik": 3}, "SPY": {"cls": "etf", "cik": None},
+            "X1": {"cls": "stock", "cik": None}, "X2": {"cls": "stock", "cik": None}}
+
+    def test_folds_same_cik_into_most_traded_class(self):
+        dv = {"GOOGL": 10.0, "GOOG": 6.0, "FOXA": 1.0, "FOX": 3.0, "AAPL": 9.0, "SPY": 50.0}
+        keep, aka = p.collapse_share_classes(list(self.meta), self.meta, dv)
+        self.assertEqual(keep, ["GOOGL", "FOX", "AAPL", "SPY", "X1", "X2"])   # order kept, missing CIKs untouched
+        self.assertEqual(aka, {"GOOGL": ["GOOG"], "FOX": ["FOXA"]})
+
+    def test_tie_or_missing_volume_goes_to_first_ticker_alphabetically(self):
+        keep, aka = p.collapse_share_classes(["GOOGL", "GOOG"], self.meta, {"GOOGL": float("nan")})
+        self.assertEqual((keep, aka), (["GOOG"], {"GOOG": ["GOOGL"]}))
+
+
+class YahooCache(unittest.TestCase):
+    """v2.4.1: Yahoo summaries are re-fetched after 30 days; failures never wipe a cached summary."""
+    today = date(2026, 11, 21)
+
+    def test_old_cache_entries_get_staggered_fixed_ages(self):
+        ticks = [f"T{k}" for k in range(500)]
+        ages = [(self.today - date.fromisoformat(p.yahoo_entry(t, "x", self.today)["fetched"])).days for t in ticks]
+        self.assertTrue(all(0 <= a < p.YAHOO_TTL_DAYS for a in ages))
+        self.assertGreater(len(set(ages)), 25)                                   # spread over the month
+        self.assertEqual(ages, [(self.today - date.fromisoformat(p.yahoo_entry(t, "x", self.today)["fetched"])).days for t in ticks])
+        self.assertFalse(any(p.yahoo_due(p.yahoo_entry(t, "x", self.today), self.today) for t in ticks))
+
+    def test_refresh_rules(self):
+        d = lambda n: (self.today - timedelta(days=n)).isoformat()  # noqa: E731
+        cache = {"FRESH": {"text": "fresh", "fetched": d(29)}, "STALE": {"text": "old", "fetched": d(30)},
+                 "SAME": {"text": "same", "fetched": d(45)}, "FAIL": {"text": "keep me", "fetched": d(31)},
+                 "EMPTY": {"text": "keep me too", "fetched": d(40)}, "BARE": "legacy string"}
+        answers = {"STALE": "new", "SAME": "same", "FAIL": RuntimeError("429"), "EMPTY": "", "NEWT": "brand new",
+                   "NEWFAIL": RuntimeError("timeout"), "BARE": "should not be asked"}
+        calls = []
+
+        def fetch(t):
+            calls.append(t)
+            a = answers[t]
+            if isinstance(a, Exception):
+                raise a
+            return a
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "yahoo_desc.json"
+            path.write_text(json.dumps(cache))
+            stocks = ["FRESH", "STALE", "SAME", "FAIL", "EMPTY", "NEWT", "NEWFAIL", "BARE"]
+            texts, stats = p.yahoo_texts(stocks, self.today, fetch, path, seed=None)
+            self.assertEqual(sorted(calls), sorted(["STALE", "SAME", "FAIL", "EMPTY", "NEWT", "NEWFAIL"]))
+            self.assertEqual(texts, {"FRESH": "fresh", "STALE": "new", "SAME": "same", "FAIL": "keep me",
+                                     "EMPTY": "keep me too", "NEWT": "brand new", "BARE": "legacy string"})
+            self.assertEqual(stats, {"fetched": 3, "new": ["NEWT"], "changed": ["STALE"], "failed": ["FAIL", "EMPTY", "NEWFAIL"]})
+            saved = json.loads(path.read_text())
+            self.assertNotIn("NEWFAIL", saved)
+            self.assertEqual(saved["STALE"], {"text": "new", "fetched": "2026-11-21"})
+            self.assertEqual(saved["FAIL"]["fetched"], d(31))                     # still due: retried next run
+            # the next run the same day only retries the failures
+            calls.clear()
+            p.yahoo_texts(stocks, self.today, fetch, path, seed=None)
+            self.assertEqual(sorted(calls), ["EMPTY", "FAIL", "NEWFAIL"])
+
+
+class TenKCache(unittest.TestCase):
+    """v2.4.1: a 10-K is downloaded once per accession number; a failed lookup reuses the last filing."""
+    HTML = ("<html><body><p>Item 1. Business</p><p>" + "We make industrial widgets and sell them. " * 60
+            + "</p><p>Item 1A. Risk Factors</p><p>Risks.</p></body></html>").encode()
+
+    def run_once(self, tmp, lookup):
+        gets = []
+
+        class FakeHttp:
+            def __init__(self, ua):
+                pass
+
+            def get(self, url, **kw):
+                gets.append(url)
+                return SimpleNamespace(content=self.html)
+        FakeHttp.html = self.HTML
+        meta = {"AAA": {"cik": 7}, "BBB": {"cik": 8}}
+        with mock.patch.object(p, "CACHE", Path(tmp)), mock.patch.object(p, "Polite", FakeHttp), \
+                mock.patch.object(p, "latest_10k", lambda http, cik, trace=None: lookup(cik)):
+            texts, fails, why, mode, dumps, traces, stats = p.edgar_texts(meta, ["AAA", "BBB"], "ua")
+        return texts, fails, why, stats, gets
+
+    def test_download_once_reuse_fallback_and_supersede(self):
+        def fails_for_8(acc):
+            def lookup(cik):
+                if cik == 8:
+                    raise RuntimeError("HTTP 503")
+                return acc, "a.htm"
+            return lookup
+        with tempfile.TemporaryDirectory() as tmp:
+            texts, fails, why, stats, gets = self.run_once(tmp, fails_for_8("0001-26-000001"))
+            self.assertIn("AAA", texts)
+            self.assertEqual((fails, why["BBB"]), (["BBB"], "RuntimeError"))         # no cached filing to fall back on
+            self.assertEqual((stats["reused"], stats["downloaded"], len(gets)), (0, ["AAA"], 1))
+            self.assertEqual(json.loads((Path(tmp) / "edgar" / "index.json").read_text())["7"]["acc"], "0001-26-000001")
+
+            texts2, _, _, stats, gets = self.run_once(tmp, fails_for_8("0001-26-000001"))
+            self.assertEqual((stats["reused"], stats["downloaded"], gets), (1, [], []))  # same filing: nothing downloaded
+            self.assertEqual(texts2["AAA"], texts["AAA"])
+
+            def all_fail(cik):
+                raise RuntimeError("HTTP 429")
+            texts3, fails, _, stats, gets = self.run_once(tmp, all_fail)
+            self.assertEqual((texts3["AAA"], stats["lookupFallback"], fails, gets), (texts["AAA"], ["AAA"], ["BBB"], []))
+
+            _, _, _, stats, gets = self.run_once(tmp, fails_for_8("0001-26-000002"))   # a newer 10-K
+            self.assertEqual((stats["downloaded"], len(gets)), (["AAA"], 1))
+            self.assertEqual(sorted(f.name for f in (Path(tmp) / "edgar").glob("7_*")), ["7_0001-26-000002.full.txt.gz"])
 
 
 class TextQualityGate(unittest.TestCase):

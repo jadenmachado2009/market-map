@@ -67,7 +67,8 @@ export default function ProPage() {
                 <>Source: Yahoo Finance business summaries for now. The pipeline reads SEC 10-K Item 1 once its SEC contact is configured.</>
               )}{" "}
               Descriptions are embedded with a small local model, after removing names, boilerplate and the average description.
-              It&apos;s shown as a percentile (pctl): 99 pctl means more similar than 99% of stock pairs.
+              It&apos;s shown as a percentile (pctl): 99 pctl means more similar than 99% of stock pairs. A 10-K is
+              read again only when the company files a new one; Yahoo summaries refresh every 30 days.
             </p>
           </div>
           <div className="space-y-2">
@@ -80,7 +81,8 @@ export default function ProPage() {
           </div>
         </div>
         <p className="mt-8 text-xs text-ink-3">
-          Data: today&apos;s S&amp;P 500 members (Wikipedia), so it has survivorship bias. Prices from Yahoo Finance via
+          Data: today&apos;s S&amp;P 500 members (Wikipedia), so it has survivorship bias. A company with several share
+          classes (GOOG and GOOGL) is one dot, under its most-traded class. Prices from Yahoo Finance via
           yfinance; share counts from SEC EDGAR. Not investment advice.
         </p>
       </section>

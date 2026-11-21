@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Market Map Pro (v2.2) data pipeline.
+"""Market Map Pro (v2.4.1) data pipeline.
 
 Builds everything the /pro route needs: three factor presets (market; + rates & defensives;
 + size & value), winsorised residual correlations, yearly stability counts, stable pair lists
@@ -7,7 +7,8 @@ with theme tags, a Fisher-z / Benjamini-Hochberg decoupling list plus a watchlis
 closest to breaking, business-text similarity
 (SEC 10-K Item 1 when SEC_USER_AGENT is set, Yahoo summaries otherwise), a cross-asset universe,
 HDBSCAN clusters (noise points assigned to their neighbours' majority cluster), covariance inputs for the portfolio X-ray and hedge finder, and compact
-lazy-loaded binaries.
+lazy-loaded binaries. Share classes of one company (same CIK) are one ticker. Text is cached across
+runs: a 10-K is downloaded once per accession number, Yahoo summaries are refreshed every 30 days.
 
 Usage:
     python pipeline_v2.py                  # full run
@@ -30,7 +31,9 @@ import re
 import sys
 import time
 import warnings
-from collections import Counter
+import zlib
+from collections import Counter, defaultdict
+from datetime import date, timedelta
 from io import StringIO
 from pathlib import Path
 
@@ -61,6 +64,7 @@ DECOUPLE_HELD = 7 / 11  # ... that held in at least 7 of 11 calendar years
 FDR_Q = 0.05
 CLUSTER_MERGE_EPS = 0.05  # merge same-sector clusters whose nearest members are this close
 NOISE_K = 5             # HDBSCAN noise points join the majority cluster of their 5 nearest clustered neighbours
+YAHOO_TTL_DAYS = 30     # a cached Yahoo summary is re-fetched once it is this many days old
 N_WATCH = 25            # decoupling watchlist exported per preset (the page shows the top 5 within filters)
 
 # Factor instruments per preset, and the regression basis that spans exactly the same space
@@ -276,6 +280,25 @@ def load_universe():
             meta[sym] = {"name": CROSS_NAMES[sym], "cls": cls, "sector": CLASS_LABEL[cls], "sub": CLASS_LABEL[cls], "cik": None}
     return meta
 
+
+
+def collapse_share_classes(tickers: list[str], meta: dict, dollar_vol) -> tuple[list[str], dict[str, list[str]]]:
+    """One ticker per company. Stocks that share a CIK (GOOG/GOOGL, FOX/FOXA, NWS/NWSA) are share classes of
+    one company: the class with the higher average dollar volume stays and the others leave the universe as
+    its 'aka' (search, deep links and portfolios map them to it), so no list, twin or hedge can pair two
+    classes of one company. Ties go to the alphabetically first ticker. Returns (tickers, aka)."""
+    by_cik: dict[int, list[str]] = defaultdict(list)
+    for t in tickers:
+        if meta[t]["cls"] == "stock" and meta[t].get("cik"):
+            by_cik[meta[t]["cik"]].append(t)
+    aka: dict[str, list[str]] = {}
+    for group in by_cik.values():
+        if len(group) > 1:
+            dv = {t: float(np.nan_to_num(dollar_vol.get(t, 0.0))) for t in group}
+            keep = max(sorted(group), key=dv.get)
+            aka[keep] = sorted(t for t in group if t != keep)
+    folded = {t for ts in aka.values() for t in ts}
+    return [t for t in tickers if t not in folded], aka
 
 def download_prices(tickers: list[str], cached: bool):
     import pandas as pd
@@ -506,11 +529,15 @@ def latest_10k(http, cik: int, trace: list | None = None) -> tuple[str, str] | N
 
 
 def edgar_texts(meta: dict, stocks: list[str], ua: str, extractors: dict | None = None, debug: set | None = None):
-    """Item 1 of each company's latest 10-K. The filing's whole plain text is cached per accession
-    number, so extractor fixes re-run on the cache without refetching. Custom extractors replace the
-    standard rule for their tickers; 'relaxed' tickers try the standard rule, then the relaxed one.
-    Returns (texts, failed, reason, mode, dumps, traces): mode is how each text was extracted; dumps hold
-    heading lines for `debug` tickers; traces hold URL/HTTP lines for every lookup that failed."""
+    """Item 1 of each company's latest 10-K. A filing is downloaded once: its whole plain text is cached per
+    accession number (extractor fixes re-run on the cache), so a run only asks EDGAR whether a newer 10-K
+    exists, and a superseded filing's file is deleted when the new one arrives. edgar/index.json records the
+    filing each company last used: if the lookup fails, that filing is reused instead of dropping the company
+    to Yahoo for a night. Custom extractors replace the standard rule for their tickers; 'relaxed' tickers
+    try the standard rule, then the relaxed one.
+    Returns (texts, failed, reason, mode, dumps, traces, stats): mode is how each text was extracted; dumps
+    hold heading lines for `debug` tickers; traces hold URL/HTTP lines for every lookup that failed; stats
+    counts filings reused from the cache and names those downloaded (new 10-Ks) or reused after a failed lookup."""
     extractors = extractors or {"custom": {}, "relaxed": set()}
     debug = debug or set()
     d = CACHE / "edgar"
@@ -518,12 +545,24 @@ def edgar_texts(meta: dict, stocks: list[str], ua: str, extractors: dict | None 
     for old in d.glob("*.txt.gz"):           # v2.1 caches held only the (often wrong) extracted span
         if not old.name.endswith(".full.txt.gz"):
             old.unlink()
+    idx_path = d / "index.json"
+    index = json.loads(idx_path.read_text()) if idx_path.exists() else {}
     http = Polite(ua)
     out, fails, why, mode, dumps, traces = {}, [], {}, {}, {}, {}
+    stats = {"reused": 0, "downloaded": [], "lookupFallback": []}
     for n, t in enumerate(stocks, 1):
         cik, trace = meta[t]["cik"], []
         try:
-            hit = latest_10k(http, cik, trace) if cik else None
+            hit = None
+            if cik:
+                try:
+                    hit = latest_10k(http, cik, trace)
+                except Exception:  # noqa: BLE001
+                    prev = index.get(str(cik))
+                    if not prev or not (d / f"{cik}_{prev['acc']}.full.txt.gz").exists():
+                        raise
+                    hit = (prev["acc"], prev["doc"])
+                    stats["lookupFallback"].append(t)
             if not hit:
                 why[t] = "no 10-K on EDGAR" if cik else "no CIK"
                 traces[t] = trace
@@ -533,10 +572,16 @@ def edgar_texts(meta: dict, stocks: list[str], ua: str, extractors: dict | None 
                 f = d / f"{cik}_{acc}.full.txt.gz"
                 if f.exists():
                     text = gzip.decompress(f.read_bytes()).decode()
+                    stats["reused"] += 1
                 else:
                     trace.append(url)
                     text = html_to_text(http.get(url).content)
                     f.write_bytes(gzip.compress(text.encode()))
+                    stats["downloaded"].append(t)
+                    for old in d.glob(f"{cik}_*.full.txt.gz"):     # the 10-K this one supersedes
+                        if old != f:
+                            old.unlink()
+                index[str(cik)] = {"acc": acc, "doc": doc, "ticker": t}
                 if t in extractors["custom"]:
                     c = extractors["custom"][t]
                     item1, how = extract_by_headings(text, c["start"], c["end"]), "custom"
@@ -559,7 +604,8 @@ def edgar_texts(meta: dict, stocks: list[str], ua: str, extractors: dict | None 
             fails.append(t)
         if n % 100 == 0:
             log(f"  EDGAR {n}/{len(stocks)}")
-    return out, fails, why, mode, dumps, traces
+    idx_path.write_text(json.dumps(index, sort_keys=True, indent=0))
+    return out, fails, why, mode, dumps, traces, stats
 
 
 def text_quality(emb: np.ndarray, subs: list[str], sectors: list[str], k: int = 5) -> dict[str, float]:
@@ -670,25 +716,56 @@ def text_gate(q_edgar: dict, q_yahoo: dict) -> bool:
             and q_edgar["sameSubPct"] >= q_yahoo["sameSubPct"] - TEXT_GATE_SUBPCT - eps)
 
 
-def yahoo_texts(stocks: list[str]) -> dict[str, str]:
-    import yfinance as yf
+def yahoo_entry(t: str, v, today: date, ttl: int = YAHOO_TTL_DAYS):
+    """A cache entry {'text', 'fetched'}. Caches before v2.4.1 held bare strings with no date: each gets a
+    fixed per-ticker age of 0..ttl-1 days, so refreshes spread across the month instead of one night."""
+    if v is None or isinstance(v, dict):
+        return v
+    return {"text": v, "fetched": (today - timedelta(days=zlib.crc32(t.encode()) % ttl)).isoformat()}
 
-    path = CACHE / "yahoo_desc.json"
-    desc = json.loads(path.read_text()) if path.exists() else {}
-    seed = ROOT / "desc_cache.json"  # v1 notebook cache, if present locally
-    if seed.exists():
-        for k, v in json.loads(seed.read_text()).items():
-            desc.setdefault(k, v)
-    todo = [t for t in stocks if desc.get(t) is None]
-    for t in todo:
+
+def yahoo_due(entry, today: date, ttl: int = YAHOO_TTL_DAYS) -> bool:
+    """Missing or failed entries are fetched every run; good ones once they are `ttl` days old."""
+    return entry is None or entry.get("text") is None or (today - date.fromisoformat(entry["fetched"])).days >= ttl
+
+
+def yahoo_texts(stocks: list[str], today: date | None = None, fetch=None, path: Path | None = None,
+                seed: Path | None = ROOT / "desc_cache.json") -> tuple[dict[str, str], dict]:
+    """Yahoo longBusinessSummary per stock, cached in pro_cache/yahoo_desc.json and re-fetched every
+    YAHOO_TTL_DAYS days. A failed or empty refresh keeps the cached summary and retries next run (an empty
+    answer for a company that had a summary is a Yahoo hiccup, not news). Returns ({ticker: summary}, stats)."""
+    today = today or date.today()
+    path = path or CACHE / "yahoo_desc.json"
+    if fetch is None:
+        import yfinance as yf
+
+        def fetch(t):
+            time.sleep(0.25)
+            return yf.Ticker(t).info.get("longBusinessSummary") or ""
+    desc = {t: yahoo_entry(t, v, today) for t, v in (json.loads(path.read_text()) if path.exists() else {}).items()}
+    if seed is not None and seed.exists():  # v1 notebook cache, if present locally
+        for t, v in json.loads(seed.read_text()).items():
+            if desc.get(t) is None:
+                desc[t] = yahoo_entry(t, v, today)
+    stats = {"fetched": 0, "new": [], "changed": [], "failed": []}
+    for t in [t for t in stocks if yahoo_due(desc.get(t), today)]:
+        old = (desc.get(t) or {}).get("text")
         try:
-            desc[t] = yf.Ticker(t).info.get("longBusinessSummary") or ""
+            new = fetch(t)
         except Exception:  # noqa: BLE001
-            desc[t] = None
-        time.sleep(0.25)
-    CACHE.mkdir(exist_ok=True)
-    path.write_text(json.dumps(desc))
-    return {t: desc[t] for t in stocks if desc.get(t)}
+            new = None
+        if new is None or (not new and old):
+            stats["failed"].append(t)
+            continue
+        stats["fetched"] += 1
+        if old is None:
+            stats["new"].append(t)
+        elif new != old:
+            stats["changed"].append(t)
+        desc[t] = {"text": new, "fetched": today.isoformat()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({t: v for t, v in sorted(desc.items()) if v is not None and v.get("text") is not None}))
+    return {t: desc[t]["text"] for t in stocks if desc.get(t) and desc[t].get("text")}, stats
 
 
 BOILER = re.compile(r"[^.]*\b(incorporated|founded|headquartered|formerly known as|changed its name)\b[^.]*\.\s*", re.I)
@@ -976,9 +1053,12 @@ def main():
 
     # map window and universe: complete data over the last 2 years (after small-gap fill)
     win = lr.iloc[-MAP_DAYS:]
-    assets = [t for t in meta if t in win and win[t].notna().all()]
-    dropped = [t for t in meta if t not in assets]
+    complete = [t for t in meta if t in win and win[t].notna().all()]
+    dropped = [t for t in meta if t not in complete]
+    assets, aka = collapse_share_classes(complete, meta, (close * volume).iloc[-MAP_DAYS:].mean())
     log(f"universe: {len(assets)} assets ({sum(meta[t]['cls'] == 'stock' for t in assets)} stocks); dropped {len(dropped)}: {dropped}")
+    for t, others in sorted(aka.items()):
+        log(f"  share classes: {t} stays, {', '.join(others)} folded in (same CIK {meta[t]['cik']}; {t} trades more dollars)")
     N = len(assets)
     ix = {t: i for i, t in enumerate(assets)}
     is_stock = np.array([meta[t]["cls"] == "stock" for t in assets])
@@ -1025,11 +1105,15 @@ def main():
     mode: dict[str, str] = {}
     why: dict[str, str] = {}
     dumps: dict[str, list[str]] = {}
+    edgar_stats = None
     edgar_on = bool(ua and "@" in ua)
     if edgar_on:
-        texts, failed, why, mode, dumps, traces = edgar_texts(meta, stocks, ua, extractors, debug=special | overridden)
+        texts, failed, why, mode, dumps, traces, edgar_stats = edgar_texts(meta, stocks, ua, extractors, debug=special | overridden)
         log(f"EDGAR: Item 1 for {len(texts)} of {len(stocks)} companies "
             f"({sum(v == 'custom' for v in mode.values())} custom, {sum(v == 'relaxed' for v in mode.values())} relaxed)")
+        log(f"  10-K cache: {edgar_stats['reused']} filings reused, {len(edgar_stats['downloaded'])} downloaded"
+            + (f" (new 10-K: {', '.join(edgar_stats['downloaded'][:40])})" if edgar_stats["downloaded"] else "")
+            + (f"; lookup failed, last 10-K reused: {', '.join(edgar_stats['lookupFallback'])}" if edgar_stats["lookupFallback"] else ""))
         for t, tr in sorted(traces.items()):
             log(f"  {t} lookup failed ({why[t]}):")
             for line in tr:
@@ -1044,7 +1128,9 @@ def main():
     else:
         failed = list(stocks)
         log("EDGAR: SEC_USER_AGENT not set (needs a contact email), so every company falls back to Yahoo")
-    yt = yahoo_texts(stocks)          # every stock: the fallback, and the baseline for the quality checks
+    yt, yahoo_stats = yahoo_texts(stocks)   # every stock: the fallback, and the baseline for the quality checks
+    log(f"Yahoo summaries: {len(yt)} of {len(stocks)}; {yahoo_stats['fetched']} fetched this run (due after {YAHOO_TTL_DAYS} days or new)"
+        + "".join(f"; {k}: {', '.join(v[:20])}" for k, v in yahoo_stats.items() if isinstance(v, list) and v))
     stub = {t: f"{meta[t]['name']}: {meta[t]['sub']}" for t in stocks}
     raw_y = embed_raw([clean_text(yt.get(t) or stub[t], meta[t]["name"]) for t in stocks])
     emb_y = finish_embedding(raw_y)
@@ -1225,7 +1311,7 @@ def main():
     mixed_report: dict = {}
     si, sj = np.triu_indices(N, 1)
     cik = np.array([meta[t]["cik"] or -(k + 1) for k, t in enumerate(assets)])
-    distinct = cik[si] != cik[sj]            # GOOG/GOOGL, FOX/FOXA, NWS/NWSA are one company
+    distinct = cik[si] != cik[sj]            # share classes are already folded into one ticker; belt and braces
     for p in FACTOR_COLS:
         d = st[p]
         inp, C, K, Nw, CL, C60, beh = d["inp"], d["C"], d["K"], d["Nw"], d["CL"], d["C60"], d["beh"]
@@ -1337,6 +1423,7 @@ def main():
         "textCheck": text_check,
         "readsLikeMinPool": READS_LIKE_MIN_POOL,
         "readsLikeYahoo": yahoo_rl,
+        "textUpdates": {"edgar": edgar_stats, "yahoo": yahoo_stats, "yahooTtlDays": YAHOO_TTL_DAYS},
         "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
                      "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t in ix]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],
@@ -1345,7 +1432,7 @@ def main():
                     "adv": round(float(adv[t]) / 1e6, 1) if np.isfinite(adv[t]) else None,
                     "beta": round(float(beta_mkt[ix[t]]), 2),
                     "sd": sig5(sd2[ix[t]]), "sd1y": sig5(sd1[ix[t]]),
-                    "text": text_src.get(t)} for t in assets],
+                    "text": text_src.get(t), **({"aka": aka[t]} if t in aka else {})} for t in assets],
         "nnBiz": nn_biz,
         "data": out_presets,
     }

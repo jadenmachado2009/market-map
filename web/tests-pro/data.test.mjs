@@ -79,3 +79,33 @@ test("mixed-source rule: no list pair mixes text sources; Reads like stays withi
     for (const [t] of nb) assert.equal(src[t], a.text, `${a.t} (${a.text}) reads like ${t} (${src[t]})`);
   });
 });
+
+test("share classes: one ticker per company; no list, twin, pair or lookup names a folded class", () => {
+  const tickers = new Set(data.assets.map((a) => a.t));
+  const folded = data.assets.flatMap((a) => a.aka ?? []);
+  assert.equal(new Set(folded).size, folded.length, "a folded class belongs to two companies");
+  for (const t of folded) assert.ok(!tickers.has(t), `${t} is folded into another ticker but still on the map`);
+  for (const [a, b] of [["GOOG", "GOOGL"], ["FOX", "FOXA"], ["NWS", "NWSA"]]) {
+    assert.ok(!(tickers.has(a) && tickers.has(b)), `${a} and ${b} are both on the map`);
+  }
+  const named = [];
+  for (const l of data.nnBiz) for (const [t] of l ?? []) named.push(t);
+  for (const P of Object.values(data.data)) {
+    for (const l of P.nnBeh) for (const [t] of l ?? []) named.push(t);
+    for (const k of ["hidden", "apart", "decouple", "watch"]) for (const r of P[k]) named.push(r.a, r.b);
+  }
+  const bad = named.filter((t) => !tickers.has(t));
+  assert.deepEqual(bad, [], "lists name tickers that are not on the map");
+});
+
+test("text cache report: counts are present and consistent with this run's text sources", () => {
+  const u = data.textUpdates;
+  assert.ok(u, "textUpdates missing");
+  assert.ok(u.yahooTtlDays > 0);
+  assert.ok(u.yahoo.fetched >= u.yahoo.new.length + u.yahoo.changed.length);
+  if (data.textSource === "edgar") {
+    assert.ok(u.edgar, "an EDGAR run reports its 10-K cache");
+    const k10 = data.assets.filter((a) => a.text === "edgar").length;
+    assert.ok(u.edgar.reused + u.edgar.downloaded.length >= k10, "fewer filings read than 10-K texts used");
+  }
+});

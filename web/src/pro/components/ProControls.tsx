@@ -163,7 +163,7 @@ export function Search({ assets, onPick }: { assets: Asset[]; onPick: (t: string
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return [];
-    const byTicker = assets.filter((x) => x.t.toLowerCase().startsWith(s));
+    const byTicker = assets.filter((x) => [x.t, ...(x.aka ?? [])].some((t) => t.toLowerCase().startsWith(s)));
     const byName = assets.filter((x) => !byTicker.includes(x) && x.name.toLowerCase().includes(s));
     return [...byTicker.sort((a, b) => a.t.length - b.t.length), ...byName].slice(0, 8);
   }, [q, assets]);
@@ -204,7 +204,10 @@ export function Search({ assets, onPick }: { assets: Asset[]; onPick: (t: string
               <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(m.t)}
                 className="flex w-full gap-2 px-3 py-1.5 text-left hover:bg-surface-2">
                 <span className="w-16 shrink-0 font-medium text-ink">{m.t}</span>
-                <span className="truncate text-ink-2">{m.name}</span>
+                <span className="truncate text-ink-2">
+                  {m.name}
+                  {m.aka && <span className="text-ink-3"> · also {m.aka.join(", ")}</span>}
+                </span>
               </button>
             </li>
           ))}

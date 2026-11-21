@@ -32,9 +32,10 @@ export type ParsedPortfolio = { holdings: Holding[]; unknown: string[]; weighted
 /**
  * Parse "NVDA 20, MSFT 15, JPM 10" (commas, semicolons or new lines; weights optional, % allowed).
  * No weights -> equal weight. Some weights -> missing ones get the average of the given ones.
- * Weights are normalised to sum to 1. Duplicate tickers are merged.
+ * Weights are normalised to sum to 1. Duplicate tickers are merged; `alias` maps another share class
+ * (GOOG) to the ticker the map uses (GOOGL), so both merge into one holding.
  */
-export function parsePortfolio(text: string, known: Set<string>): ParsedPortfolio {
+export function parsePortfolio(text: string, known: Set<string>, alias?: Map<string, string>): ParsedPortfolio {
   const entries: { t: string; w: number | null }[] = [];
   const unknown: string[] = [];
   for (const raw of text.split(/[,;\n]+/)) {
@@ -43,7 +44,8 @@ export function parsePortfolio(text: string, known: Set<string>): ParsedPortfoli
       if (raw.trim()) unknown.push(raw.trim());
       continue;
     }
-    const t = m[1].toUpperCase().replace(".", "-");
+    const typed = m[1].toUpperCase().replace(".", "-");
+    const t = alias?.get(typed) ?? typed;
     if (!known.has(t)) {
       unknown.push(t);
       continue;

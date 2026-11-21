@@ -23,7 +23,13 @@ const FACTOR_TEXT: Record<PresetId, string> = {
 export default function ProApp({ data }: { data: ProData }) {
   const { assets } = data;
   const N = assets.length;
-  const index = useMemo(() => new Map(assets.map((a, i) => [a.t, i])), [assets]);
+  // Other share classes (GOOG for GOOGL) resolve to the company's ticker in deep links and portfolios.
+  const alias = useMemo(() => new Map(assets.flatMap((a) => (a.aka ?? []).map((x) => [x, a.t] as const))), [assets]);
+  const index = useMemo(() => {
+    const m = new Map(assets.map((a, i) => [a.t, i]));
+    for (const [x, t] of alias) m.set(x, m.get(t)!);
+    return m;
+  }, [assets, alias]);
   const known = useMemo(() => new Set(assets.map((a) => a.t)), [assets]);
 
   const [preset, setPreset] = useState<PresetId>("mkt");
@@ -43,9 +49,9 @@ export default function ProApp({ data }: { data: ProData }) {
   const [raw1, setRaw1] = useState<{ get: (i: number, j: number) => number } | null>(null);
 
   const pf = useMemo(() => {
-    const p = parsePortfolio(pfText, known);
+    const p = parsePortfolio(pfText, known, alias);
     return { text: pfText, holdings: p.holdings.map((h) => ({ i: index.get(h.t)!, w: h.w })), unknown: p.unknown, weighted: p.weighted };
-  }, [pfText, known, index]);
+  }, [pfText, known, index, alias]);
 
   const choose = (s: Selection) => {
     setFocus({ s, morph });

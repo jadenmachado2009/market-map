@@ -17,6 +17,7 @@ export type Asset = {
   sd: number | null; // daily sd of winsorised total returns, 2 years
   sd1y: number | null; // same, last year (hedge stability)
   text: "edgar" | "yahoo" | "name" | null;
+  aka?: string[]; // other share classes of the same company (same CIK), folded into this ticker
 };
 
 export type NnBeh = [ticker: string, corr: number, held: number, windows: number];
@@ -55,6 +56,11 @@ export type ProData = {
   textCheck?: Record<"edgar" | "yahoo", { sub: number; sector: number; sameSubPct: number }> | null;
   readsLikeMinPool?: number; // "Reads like" needs this many other stocks with the same text source
   readsLikeYahoo?: string[]; // fallback stocks whose "Reads like" is Yahoo summary vs the Yahoo summaries of all stocks
+  textUpdates?: {
+    edgar: { reused: number; downloaded: string[]; lookupFallback: string[] } | null; // 10-K filings this run
+    yahoo: { fetched: number; new: string[]; changed: string[]; failed: string[] };
+    yahooTtlDays: number;
+  };
   presets: { id: PresetId; label: string; factors: string[]; exposures: string[]; notPlotted: string[] }[];
   assets: Asset[];
   nnBiz: (NnBiz[] | null)[]; // compared within the same text source; [] = fewer than readsLikeMinPool comparable stocks

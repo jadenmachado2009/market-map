@@ -54,6 +54,15 @@ test("parsePortfolio: weights, defaults, unknowns", () => {
   assert.equal(eq.holdings[2].t, "BRK-B");
 });
 
+test("parsePortfolio: another share class merges into the company's ticker", () => {
+  const known = new Set(["GOOGL", "MSFT"]);
+  const alias = new Map([["GOOG", "GOOGL"]]);
+  const p = parsePortfolio("GOOG 10, googl 30, MSFT 60", known, alias);
+  assert.deepEqual(p.holdings.map((h) => h.t), ["GOOGL", "MSFT"]);
+  close(p.holdings[0].w, 0.4);
+  assert.deepEqual(parsePortfolio("GOOG", known).unknown, ["GOOG"]); // without the alias map it is unknown
+});
+
 test("rolling correlation and rebase", () => {
   const a = [1, 2, 3, 4, 5, 6], b = [2, 4, 6, 8, 10, 12];
   const r = rollingCorr(a, b, 3);

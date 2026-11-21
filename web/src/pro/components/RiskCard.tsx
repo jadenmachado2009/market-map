@@ -53,6 +53,9 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
             {a.t} <span className="font-normal text-ink-2">{a.name}</span>
           </h2>
           <p className="text-xs text-ink-3">{a.cls === "stock" ? `${a.sector} · ${a.sub}` : a.sector}</p>
+          {a.aka && a.aka.length > 0 && (
+            <p className="text-xs text-ink-3">Also trades as {a.aka.join(", ")}: same company, another share class, shown once.</p>
+          )}
           {a.cls === "stock" && textSource === "edgar" && a.text !== "edgar" && (
             <p className="text-xs text-ink-3">
               {a.text === "yahoo" ? "Business text: Yahoo (no usable 10-K)" : "Business text: name and industry only (no usable 10-K)"}
