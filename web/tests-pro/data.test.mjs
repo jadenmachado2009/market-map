@@ -59,9 +59,20 @@ test("mixed-source rule: no list pair mixes text sources; Reads like stays withi
   assert.ok(minPool >= 5);
   const count = {};
   data.assets.forEach((a) => { if (a.cls === "stock") count[a.text] = (count[a.text] ?? 0) + 1; });
+  const yahooRL = new Set(data.readsLikeYahoo ?? []);
+  if (data.textSource !== "edgar") assert.equal(yahooRL.size, 0);
   data.nnBiz.forEach((nb, i) => {
     const a = data.assets[i];
     if (a.cls !== "stock") return assert.equal(nb, null);
+    if (data.textSource === "edgar" && a.text === "yahoo") assert.ok(yahooRL.has(a.t), `${a.t}: Yahoo fallback without a Yahoo-based Reads like`);
+    if (yahooRL.has(a.t)) {
+      // Yahoo summary vs every stock's Yahoo summary: any stock may appear, never itself, best first
+      assert.equal(a.text, "yahoo");
+      assert.equal(nb.length, 5, `${a.t}: ${nb.length} Yahoo-based entries`);
+      for (const [t, v] of nb) assert.ok(t !== a.t && src[t] !== undefined && v > 0 && v <= 100, `${a.t}: ${t} ${v}`);
+      for (let k = 1; k < nb.length; k++) assert.ok(nb[k - 1][1] >= nb[k][1], `${a.t}: not sorted`);
+      return;
+    }
     const pool = count[a.text] - 1;
     if (nb.length === 0) return assert.ok(pool < minPool, `${a.t}: empty Reads like but ${pool} comparable stocks`);
     assert.ok(pool >= minPool && nb.length === 5, `${a.t}: ${nb.length} Reads like entries from a pool of ${pool}`);

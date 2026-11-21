@@ -8,9 +8,11 @@ import { fmt, pctLabel } from "../lib/scales";
 
 type Loaded = { pa: number[]; pb: number[]; roll: number[]; sim: number };
 
-export function PairPanel({ a, b, assets, preset, presetLabel, dates, matrix, onPick, onClose }: {
+export function PairPanel({ a, b, assets, preset, presetLabel, dates, matrix, yahooSim, onPick, onClose }: {
   a: number; b: number; assets: Asset[]; preset: PresetId; presetLabel: string; dates: string[];
-  matrix: PairMatrix | null; onPick: (t: string) => void; onClose: () => void;
+  matrix: PairMatrix | null;
+  yahooSim?: number | null; // set when the pair is in a fallback stock's Yahoo-based "Reads like": show that score
+  onPick: (t: string) => void; onClose: () => void;
 }) {
   const [data, setData] = useState<{ key: string; v: Loaded } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,9 +61,10 @@ export function PairPanel({ a, b, assets, preset, presetLabel, dates, matrix, on
         <Stat label="Long-run level (since 2016)" value={fmt(longRun)} />
         <Stat label="Held ≥0.3, calendar years" value={held} />
         <Stat
-          label="Business-text similarity"
-          value={!v ? "…" : Number.isFinite(v.sim) ? pctLabel(v.sim) : "n/a"}
-          hint={v && Number.isFinite(v.sim) ? `More similar than ${v.sim.toFixed(1)}% of stock pairs` : "Only stocks have business text"}
+          label={yahooSim != null ? "Business-text similarity (Yahoo summaries)" : "Business-text similarity"}
+          value={yahooSim != null ? pctLabel(yahooSim) : !v ? "…" : Number.isFinite(v.sim) ? pctLabel(v.sim) : "n/a"}
+          hint={yahooSim != null ? `More similar than ${yahooSim.toFixed(1)}% of pairs of Yahoo summaries`
+            : v && Number.isFinite(v.sim) ? `More similar than ${v.sim.toFixed(1)}% of stock pairs` : "Only stocks have business text"}
         />
         <Stat label={`β ${A.t} to S&P 500`} value={fmt(A.beta)} />
         <Stat label={`β ${B.t} to S&P 500`} value={fmt(B.beta)} />

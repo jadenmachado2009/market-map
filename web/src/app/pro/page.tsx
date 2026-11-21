@@ -56,7 +56,7 @@ export default function ProPage() {
               {data.textSource === "edgar" ? (
                 <>
                   Source: SEC 10-K Item 1.
-                  {data.textFallback.length > 0 && ` ${data.textFallback.length} companies fell back to Yahoo summaries.`}
+                  {data.textFallback.length > 0 && ` ${data.textFallback.length} companies fell back to Yahoo summaries; their “Reads like” compares Yahoo summaries with those of every stock.`}
                 </>
               ) : data.textRejected ? (
                 <>

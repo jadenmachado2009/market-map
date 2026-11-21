@@ -621,7 +621,8 @@ def reads_like(S: np.ndarray, P: np.ndarray, is_stock: np.ndarray, src: np.ndarr
     stocks share the source: with 100+ the 5 shown are the top 5% of candidates or better. Yahoo fallback
     stocks number about a dozen, and Yahoo-vs-Yahoo similarity is inflated by the shared summary style
     (different-sector pairs: median 73rd pctl vs 45th for 10-K pairs), so their "top 5" was noise
-    (VLO read like a packager, a copper miner and a utility). None for non-stocks."""
+    (VLO read like a packager, a copper miner and a utility); since v2.4 reads_like_yahoo gives them a
+    full Yahoo pool instead. None for non-stocks."""
     out = []
     for i in range(len(assets)):
         if not is_stock[i]:
@@ -634,6 +635,31 @@ def reads_like(S: np.ndarray, P: np.ndarray, is_stock: np.ndarray, src: np.ndarr
             continue
         row = np.where(peers, S[i], -np.inf)
         out.append([[assets[j], round(float(P[i, j]), 1)] for j in np.argsort(-row)[:k]])
+    return out
+
+
+def reads_like_yahoo(E_y: np.ndarray, have_y: np.ndarray, targets: list, names: list,
+                     min_pool: int = READS_LIKE_MIN_POOL, k: int = 5) -> dict:
+    """"Reads like" for stocks on Yahoo fallback text, on Yahoo summaries alone: each target's summary
+    vs the Yahoo summary of every other stock that has one (10-K stocks included), so both sides are
+    the same source and the pool is the whole index, not the dozen other fallbacks. Percentiles are
+    among Yahoo-vs-Yahoo pairs of that pool (the Yahoo scale, not the 10-K one). E_y rows, have_y and
+    names are in stock order; targets are row indices. Returns {name: [[ticker, pctl], ...]}, [] when the
+    pool is under min_pool or the target has no Yahoo summary."""
+    pool = np.where(have_y)[0]
+    pos = {int(g): r for r, g in enumerate(pool)}
+    Sy = E_y[pool] @ E_y[pool].T
+    ref = np.sort(Sy[np.triu_indices(len(pool), 1)])
+    out = {}
+    for i in targets:
+        if int(i) not in pos or len(pool) - 1 < max(min_pool, k):
+            out[names[i]] = []
+            continue
+        r = pos[int(i)]
+        row = Sy[r].copy()
+        row[r] = -np.inf
+        out[names[i]] = [[names[pool[j]], round(float(np.searchsorted(ref, row[j], side="right") / len(ref) * 100), 1)]
+                         for j in np.argsort(-row)[:k]]
     return out
 
 
@@ -1289,6 +1315,13 @@ def main():
             upper(Nw).astype(np.uint8).tofile(f)
 
     nn_biz = reads_like(S, P, is_stock, src_arr, assets)
+    yahoo_rl = []                       # fallback stocks whose "Reads like" is on Yahoo summaries vs all stocks
+    if used_edgar:
+        targets = [sidx[t] for t in stocks if text_src[t] == "yahoo"]
+        for t, lst in reads_like_yahoo(emb_y, np.array([t in yt for t in stocks]), targets, stocks).items():
+            nn_biz[ix[t]] = lst
+            yahoo_rl.append(t)
+        yahoo_rl.sort()
 
     beta_mkt = residualize(R2, win[["SPY"]].to_numpy())[1][0]
     doc = {
@@ -1303,6 +1336,7 @@ def main():
         "textRejected": text_rejected,
         "textCheck": text_check,
         "readsLikeMinPool": READS_LIKE_MIN_POOL,
+        "readsLikeYahoo": yahoo_rl,
         "presets": [{"id": p, "label": PRESET_LABEL[p], "factors": FACTOR_INSTRUMENTS[p], "exposures": EXPOSURE_NAMES[p],
                      "notPlotted": [t for t in FACTOR_INSTRUMENTS[p] if t in ix]} for p in FACTOR_COLS],
         "assets": [{"t": t, "name": meta[t]["name"], "cls": meta[t]["cls"], "sector": meta[t]["sector"], "sub": meta[t]["sub"],
@@ -1335,9 +1369,9 @@ def main():
             + (f" ({', '.join(fmt_p(q) + ' [' + src_arr[si[q]] + '/' + src_arr[sj[q]] + ']' for q in gone)})" if gone else ""))
         log(f"    before: {', '.join(fmt_p(q) for q in before[:10])}")
         log(f"    after:  {', '.join(fmt_p(q) for q in after[:10])}")
-    for t in ("XOM", "KKR"):
+    for t in ["XOM", "KKR"] + yahoo_rl:
         if t in ix and nn_biz[ix[t]] is not None:
-            log(f"  {t} reads like [{text_src.get(t)}]: " + (", ".join(f"{a} {v}" for a, v in nn_biz[ix[t]]) or "not enough comparable text"))
+            log(f"  {t} reads like [{'Yahoo vs all stocks' if t in yahoo_rl else text_src.get(t)}]: " + (", ".join(f"{a} {v}" for a, v in nn_biz[ix[t]]) or "not enough comparable text"))
 
     log("\nDECOUPLING (Fisher z, one-sided, BH q = 0.05)")
     for p, P_ in report.items():

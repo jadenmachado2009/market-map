@@ -461,6 +461,43 @@ class ReadsLike(unittest.TestCase):
         self.assertEqual(nb[:11], [[]] * 11)
 
 
+class ReadsLikeYahoo(unittest.TestCase):
+    """Fallback stocks: Yahoo summary vs the Yahoo summaries of every stock (10-K stocks included)."""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.n = 12
+        X = rng.normal(size=(self.n, 8))
+        X[1] = X[0] + 0.05 * rng.normal(size=8)        # stock 1 (a 10-K stock) reads like fallback 0
+        X[5] = X[0] + 0.01 * rng.normal(size=8)        # stock 5 is closer still, but has no Yahoo summary
+        self.E = X / np.linalg.norm(X, axis=1, keepdims=True)
+        self.have = np.ones(self.n, bool)
+        self.have[5] = False
+        self.names = [f"S{k}" for k in range(self.n)]
+
+    def test_full_pool_and_scale(self):
+        out = p.reads_like_yahoo(self.E, self.have, [0, 3], self.names, min_pool=5)
+        self.assertEqual(set(out), {"S0", "S3"})
+        nb = out["S0"]
+        self.assertEqual(len(nb), 5)
+        self.assertEqual(nb[0][0], "S1")                 # nearest summary wins, whatever the stock's own source
+        self.assertNotIn("S0", [t for t, _ in nb])
+        self.assertNotIn("S5", [t for t, _ in nb])       # no Yahoo summary: not in the pool
+        pcts = [v for _, v in nb]
+        self.assertEqual(pcts, sorted(pcts, reverse=True))
+        self.assertEqual(nb[0][1], 100.0)                # the most similar pair of the pool is the 100th pctl
+        pool = [k for k in range(self.n) if self.have[k]]
+        sims = sorted(float(self.E[i] @ self.E[j]) for a, i in enumerate(pool) for j in pool[a + 1:])
+        s03 = [float(self.E[3] @ self.E[int(t[1:])]) for t, _ in out["S3"]]
+        for (t, v), sv in zip(out["S3"], s03):          # pctl = rank among Yahoo-vs-Yahoo pairs of the pool
+            self.assertAlmostEqual(v, round(sum(x <= sv + 1e-12 for x in sims) / len(sims) * 100, 1))
+
+    def test_small_pool_or_no_summary(self):
+        self.assertEqual(p.reads_like_yahoo(self.E, self.have, [0], self.names, min_pool=11), {"S0": []})
+        self.assertEqual(len(p.reads_like_yahoo(self.E, self.have, [0], self.names, min_pool=10)["S0"]), 5)
+        self.assertEqual(p.reads_like_yahoo(self.E, self.have, [5], self.names, min_pool=5), {"S5": []})
+
+
 class TextQualityGate(unittest.TestCase):
     def test_quality_and_gate(self):
         rng = np.random.default_rng(1)

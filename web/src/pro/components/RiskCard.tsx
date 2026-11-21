@@ -20,7 +20,7 @@ const Tick = ({ t, onPick, strong }: { t: string; onPick: (t: string) => void; s
   </button>
 );
 
-export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, textSource, minPool, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
+export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nnBiz, textSource, minPool, yahooBased, firstYear, matrix, raw2, raw1, assets, passes, onPick, onPickPair, onClose }: {
   i: number;
   a: Asset;
   presetLabel: string;
@@ -30,6 +30,7 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
   nnBiz: NnBiz[] | null; // [] = fewer than minPool other stocks share this stock's text source
   textSource: "edgar" | "yahoo";
   minPool?: number;
+  yahooBased?: boolean; // nnBiz compares Yahoo summaries with those of every stock
   firstYear: number;
   matrix: PairMatrix | null;
   raw2: Corr;
@@ -101,6 +102,7 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
         </div>
         <div>
           <ListHead title="Reads like" />
+          {yahooBased && nnBiz && nnBiz.length > 0 && <p className="mb-1 text-[11px] text-ink-3">Based on Yahoo summaries</p>}
           {nnBiz && nnBiz.length === 0 ? (
             <p className="text-xs text-ink-3">
               Not enough comparable text
@@ -116,7 +118,7 @@ export function RiskCard({ i, a, presetLabel, exposureNames, exposure, nnBeh, nn
                     <Tick t={t} onPick={onPick} strong={behSet.has(t)} />
                     <button type="button" title="Open pair view" onClick={() => onPickPair(index.get(t)!)} className="text-[11px] text-ink-3 hover:text-ink">↗</button>
                   </span>
-                  <span className="text-[11px] text-ink-2" title={`More similar than ${pct}% of stock pairs`}>{pctLabel(pct)}</span>
+                  <span className="text-[11px] text-ink-2" title={`More similar than ${pct}% of ${yahooBased ? "pairs of Yahoo summaries" : "stock pairs"}`}>{pctLabel(pct)}</span>
                 </li>
               ))}
             </ol>

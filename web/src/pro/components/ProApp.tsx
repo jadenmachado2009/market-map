@@ -162,6 +162,15 @@ export default function ProApp({ data }: { data: ProData }) {
   const behNbrs = sel !== null ? toIdx(P.nnBeh[sel]) : [];
   const bizNbrs = sel !== null ? toIdx(data.nnBiz[sel]) : [];
   const pair: [number, number] | null = s?.kind === "pair" ? [s.a, s.b] : null;
+  // A fallback stock's Yahoo-based "Reads like" score, so the pair view shows the same number as the list.
+  const yahooPairSim = (i: number, j: number): number | null => {
+    for (const [x, y] of [[i, j], [j, i]]) {
+      if (!data.readsLikeYahoo?.includes(assets[x].t)) continue;
+      const hit = (data.nnBiz[x] ?? []).find(([t]) => t === assets[y].t);
+      if (hit) return hit[1];
+    }
+    return null;
+  };
   const holdings = useMemo(() => new Set(pf.holdings.map((h) => h.i)), [pf.holdings]);
   const focusSet =
     sel !== null ? new Set([sel, ...behNbrs, ...bizNbrs]) : pair ? new Set(pair) : holdings.size ? holdings : null;
@@ -274,7 +283,7 @@ export default function ProApp({ data }: { data: ProData }) {
         <Search assets={assets} onPick={pickTicker} />
         {pair ? (
           <PairPanel a={pair[0]} b={pair[1]} assets={assets} preset={preset} presetLabel={presetMeta.label} dates={data.dates}
-            matrix={matrix} onPick={pickTicker} onClose={() => choose(null)} />
+            matrix={matrix} yahooSim={yahooPairSim(pair[0], pair[1])} onPick={pickTicker} onClose={() => choose(null)} />
         ) : sel !== null ? (
           <RiskCard
             i={sel}
@@ -286,6 +295,7 @@ export default function ProApp({ data }: { data: ProData }) {
             nnBiz={data.nnBiz[sel]}
             textSource={data.textSource}
             minPool={data.readsLikeMinPool}
+            yahooBased={data.readsLikeYahoo?.includes(assets[sel].t) ?? false}
             firstYear={data.years[0]}
             matrix={matrix}
             raw2={raw?.get ?? null}

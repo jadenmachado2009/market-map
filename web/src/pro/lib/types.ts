@@ -54,6 +54,7 @@ export type ProData = {
   textRejected?: boolean; // 10-K text was built but failed the quality check against Yahoo, so Yahoo is used
   textCheck?: Record<"edgar" | "yahoo", { sub: number; sector: number; sameSubPct: number }> | null;
   readsLikeMinPool?: number; // "Reads like" needs this many other stocks with the same text source
+  readsLikeYahoo?: string[]; // fallback stocks whose "Reads like" is Yahoo summary vs the Yahoo summaries of all stocks
   presets: { id: PresetId; label: string; factors: string[]; exposures: string[]; notPlotted: string[] }[];
   assets: Asset[];
   nnBiz: (NnBiz[] | null)[]; // compared within the same text source; [] = fewer than readsLikeMinPool comparable stocks
