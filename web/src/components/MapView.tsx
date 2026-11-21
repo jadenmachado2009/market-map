@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Stock, View } from "@/lib/types";
 import { fmt } from "@/lib/scales";
+import { shortName, surpriseWord } from "@/lib/plain";
 
 const SIZE = 1000; // viewBox units
 const PAD = 40;
@@ -42,6 +43,8 @@ export type MapViewProps = {
   lateLinks: boolean; // true right after a view toggle: wait for the points to land
   onHover: (i: number | null) => void;
   onSelect: (i: number | null) => void;
+  describe: (i: number) => string; // one plain sentence for the hover card
+  zoomSignal: number; // bump to frame the current selection (story chips)
 };
 
 export default function MapView(p: MapViewProps) {
@@ -109,6 +112,13 @@ export default function MapView(p: MapViewProps) {
     const w = span * 1.35 + 60;
     setVb(clampVb((Math.min(...xs) + Math.max(...xs)) / 2 - w / 2, (Math.min(...ys) + Math.max(...ys)) / 2 - w / 2, w));
   };
+  const fitRef = useRef(fitFocus);
+  useEffect(() => {
+    fitRef.current = fitFocus; // runs before the zoom effect below, in the same commit
+  });
+  useEffect(() => {
+    if (p.zoomSignal) fitRef.current();
+  }, [p.zoomSignal]);
 
   return (
     <div className="relative">
@@ -118,7 +128,7 @@ export default function MapView(p: MapViewProps) {
         className={`block h-auto w-full select-none ${isZoomed ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair"}`}
         style={{ touchAction: isZoomed ? "none" : "auto" }}
         role="img"
-        aria-label={`Scatter map of ${p.stocks.length} S&P 500 stocks, ${p.view === "beh" ? "behaviour" : "business"} view`}
+        aria-label={`Map of ${p.stocks.length} S&P 500 stocks, placed by ${p.view === "beh" ? "how they trade" : "what they do"}`}
         onPointerDown={(e) => {
           drag.current = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y, moved: false };
         }}
@@ -204,7 +214,9 @@ export default function MapView(p: MapViewProps) {
         )}
       </svg>
 
-      {h !== null && <Tooltip stock={p.stocks[h]} x={(pos[h][0] - vb.x) / k} y={(pos[h][1] - vb.y) / k} width={width} />}
+      {h !== null && (
+        <Tooltip stock={p.stocks[h]} text={p.describe(h)} x={(pos[h][0] - vb.x) / k} y={(pos[h][1] - vb.y) / k} width={width} />
+      )}
 
       <div className="absolute right-1 top-1 flex flex-col gap-1">
         <ZoomButton label="Zoom in" onClick={() => setVb((v) => zoomed(v, 0.5, 0.5, 1 / 1.6))}>+</ZoomButton>
@@ -264,11 +276,10 @@ function ZoomButton({ label, onClick, disabled, children }: { label: string; onC
   );
 }
 
-function Tooltip({ stock, x, y, width }: { stock: Stock; x: number; y: number; width: number }) {
-  const W = 232;
-  const left = x + 16 + W > width ? x - 16 - W : x + 16;
+function Tooltip({ stock, text, x, y, width }: { stock: Stock; text: string; x: number; y: number; width: number }) {
+  const W = Math.min(264, width - 8);
+  const left = Math.max(0, x + 16 + W > width ? x - 16 - W : x + 16);
   const top = Math.max(0, y - 36);
-  const shared = Math.round(stock.overlap * 10);
   return (
     <div
       className="pointer-events-none absolute z-10 rounded-md border border-line bg-surface px-3 py-2 text-xs shadow-md"
@@ -276,14 +287,15 @@ function Tooltip({ stock, x, y, width }: { stock: Stock; x: number; y: number; w
       role="tooltip"
     >
       <div className="text-sm font-semibold text-ink">
-        {stock.t} <span className="font-normal text-ink-2">{stock.name}</span>
+        {stock.t} <span className="font-normal text-ink-2">{shortName(stock)}</span>
       </div>
       <div className="text-ink-3">
         {stock.sector} · {stock.sub}
       </div>
+      <p className="mt-1.5 text-ink">{text}</p>
       <div className="mt-1.5 flex gap-4 tabular-nums text-ink-2">
-        <span>β {fmt(stock.beta)}</span>
-        <span>{shared} of 10 neighbours shared</span>
+        <span>Swinginess {fmt(stock.beta)}</span>
+        <span>Surprise: {surpriseWord(stock.overlap)}</span>
       </div>
     </div>
   );
