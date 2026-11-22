@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,8 +13,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Market Map: the S&P 500 by behaviour vs business",
+  metadataBase: new URL("https://market-map-zeta.vercel.app"),
+  title: "Market Map: which stocks are secretly connected",
   description: "S&P 500 stocks placed by how they trade (market removed) and by what they do (description embeddings). See which stocks trade unlike their business.",
+  icons: {
+    icon: [{ url: "/brand/favicon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/brand/apple-touch-icon.png", sizes: "180x180" }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0e0e0e",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

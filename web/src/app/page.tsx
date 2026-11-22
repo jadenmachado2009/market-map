@@ -5,15 +5,22 @@ import { buildStories, companyCount } from "@/lib/plain";
 import MarketMap from "@/components/MarketMap";
 import { Help } from "@/components/Glossary";
 import TourLink from "@/components/TourLink";
+import Logo from "@/brand/Logo";
 
 const data = raw as unknown as MarketMapData;
 // Checked against the data at build time: a story whose pattern no longer holds is left out.
 const stories = buildStories(data);
 
+const TITLE = "Market Map: which stocks are secretly connected";
+const DESCRIPTION =
+  "495 big US companies grouped two ways: by what they do, and by how their share prices actually move. Where the two disagree, things get interesting.";
+const OG_IMAGE = { url: "/brand/og-classic.png", width: 1200, height: 630, alt: "Market Map: which stocks are secretly connected?" };
+
 export const metadata: Metadata = {
-  title: "Market Map: which stocks are secretly connected?",
-  description:
-    "495 big US companies grouped two ways: by what they do, and by how their share prices actually move. Where the two disagree, things get interesting.",
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: { type: "website", url: "/", siteName: "Market Map", title: TITLE, description: DESCRIPTION, images: [OG_IMAGE] },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION, images: [OG_IMAGE] },
 };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -26,7 +33,9 @@ export default function Home() {
   return (
     <main className="mx-auto w-full max-w-[1440px] px-4 pb-16 pt-6 sm:px-6 lg:px-8">
       <header className="mb-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-ink">Market Map</h1>
+        <h1 className="text-ink">
+          <Logo className="block h-6 w-auto sm:h-8" />
+        </h1>
         <p className="mt-1 text-lg text-ink">Which stocks are secretly connected?</p>
         <p className="mt-1 max-w-3xl text-sm text-ink-2">
           We grouped {companyCount(data.stocks)} big US companies two ways: by what they do, and by how their share prices

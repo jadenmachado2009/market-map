@@ -4,13 +4,20 @@ import raw from "@/data-pro/market_map_v2.json";
 import type { ProData } from "@/pro/lib/types";
 import ProApp from "@/pro/components/ProApp";
 import "@/pro/pro.css";
+import Logo from "@/brand/Logo";
 
 const data = raw as unknown as ProData;
 
+const TITLE = "Market Map Pro: what your portfolio is really betting on";
+const DESCRIPTION =
+  "Paste your holdings and see how many independent bets they really are, what they share, and what hedges them. S&P 500 plus ETFs, FX, commodities, bonds and crypto.";
+const OG_IMAGE = { url: "/brand/og-pro.png", width: 1200, height: 630, alt: "Market Map Pro: see what your portfolio is really betting on." };
+
 export const metadata: Metadata = {
-  title: "Market Map Pro: see what your portfolio is really betting on",
-  description:
-    "Paste your holdings and see how many independent bets they really are, what they share, and what hedges them. S&P 500 plus ETFs, FX, commodities, bonds and crypto.",
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: { type: "website", url: "/pro", siteName: "Market Map", title: TITLE, description: DESCRIPTION, images: [OG_IMAGE] },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION, images: [OG_IMAGE] },
 };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -24,13 +31,13 @@ export default function ProPage() {
   return (
     <main className="pro-root mx-auto w-full max-w-[1480px] px-4 pb-16 pt-6 sm:px-6 lg:px-8">
       <header className="mb-4">
-        <p className="text-xs font-medium uppercase tracking-wider text-ink-3">
-          Market Map Pro ·{" "}
-          <Link href="/" className="normal-case tracking-normal text-ink-2 hover:text-ink hover:underline">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <Logo pro className="block h-6 w-auto text-ink sm:h-8" />
+          <Link href="/" className="text-xs text-ink-2 hover:text-ink hover:underline">
             ← Classic map
           </Link>
-        </p>
-        <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-ink">See what your portfolio is really betting on.</h1>
+        </div>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink">See what your portfolio is really betting on.</h1>
         <p className="mt-1 text-xs tabular-nums text-ink-3">
           Updated nightly · as of {day(data.asof)} · {stocks} S&amp;P 500 stocks + {data.assets.length - stocks} ETFs, currencies,
           commodities, bonds and crypto · prices since {day(data.start)}
