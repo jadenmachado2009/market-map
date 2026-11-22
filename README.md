@@ -1,3 +1,12 @@
+<p align="center">
+  <a href="https://market-map-zeta.vercel.app">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="web/public/brand/mm-lockup.svg">
+      <img src="brand/readme/mm-lockup-ink.svg" alt="Market Map" width="240">
+    </picture>
+  </a>
+</p>
+
 # Market Map
 
 **Live:** https://market-map-zeta.vercel.app
