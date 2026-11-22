@@ -46,6 +46,10 @@ export default function Home() {
           <Help term="S&P 500" /> members · daily prices {day(data.start)} – {day(data.asof)} · whole-market swings removed
           using SPY, an ETF
           <Help term="ETF" /> · <TourLink /> ·{" "}
+          <a href="/about" className="font-medium text-accent hover:underline">
+            About this project
+          </a>{" "}
+          ·{" "}
           <a href="/pro" className="font-medium text-accent hover:underline">
             Try Pro →
           </a>
