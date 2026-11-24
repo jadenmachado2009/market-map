@@ -8,7 +8,7 @@ import Logo from "@/brand/Logo";
  *
  * Fill these in to show them. Empty values are left out, and the page reads fine without them.
  */
-const AUTHOR_NAME = ""; // e.g. "Alex Tan"
+const AUTHOR_NAME = "Jaden Machado";
 const LINKEDIN_URL = ""; // e.g. "https://www.linkedin.com/in/..."
 const VIDEO_URL = ""; // a short walkthrough in your own voice, e.g. an unlisted YouTube link
 
