@@ -2,7 +2,7 @@
 
 Which S&P 500 stocks secretly move together, and how many real bets does a portfolio actually hold?
 
-**[Classic map](https://market-map-zeta.vercel.app/)** · **[Market Map Pro](https://market-map-zeta.vercel.app/pro)** · **[About](https://market-map-zeta.vercel.app/about)**
+**[Classic map](https://stock-market-map.vercel.app/)** · **[Market Map Pro](https://stock-market-map.vercel.app/pro)** · **[About](https://stock-market-map.vercel.app/about)**
 
 Built by Jaden Machado, a Grade 12 student, in November 2026.
 
