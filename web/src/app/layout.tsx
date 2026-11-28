@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://market-map-zeta.vercel.app"),
+  metadataBase: new URL("https://stock-market-map.vercel.app"),
   title: "Market Map: which stocks are secretly connected",
   description: "S&P 500 stocks placed by how they trade (market removed) and by what they do (description embeddings). See which stocks trade unlike their business.",
   icons: {
