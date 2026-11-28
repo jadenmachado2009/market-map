@@ -38,7 +38,7 @@ b8cfea804a11ba8f110edb9ca790adc7f5db1944361a30b6083394262cd77b14  web/public/pro
 da4e764612506fcec06e274d7d679ce196d556641b782719c3f08ef62736ad5b  web/public/pro-data/sim_pct.bin
 c56a1932ba1b816d167f190ef7fe8ea1eccfdac9f685c536e16bddfe3834bbfc  web/src/app/favicon.ico
 8f196e5bd329b5ec549e0b6e405969af1c0d6d0f47e593f32f950c50dbf1c12d  web/src/app/globals.css
-d7ce6d639fca67d7d79d07bfcb0169f7209291eb633f0758a86c57dec18178e6  web/src/app/layout.tsx
+687cc288132e702b24bc84f7eefe043ddde99509b7b8646f06f4d05432e19e08  web/src/app/layout.tsx
 74f9f01477e374bd26a3e3e16be66ab7c889c9ee34716b211566ffc97ab8335a  web/src/app/pro/page.tsx
 6b26a368c075c5db0fa93dd71fb662e275b136b2c7947dfc2f657a0c896de79a  web/src/brand/Logo.tsx
 fa56963345bfc70b7832068d0d8f3f4ff58a27a8b90982c58b121644c8317e17  web/src/brand/logo-paths.ts
@@ -55,7 +55,7 @@ e1156ebd8c142dbb5ffa874dcb03b78c8c9e0d82a3bde07b78484ec7cd13c614  web/src/pro/li
 f97f29c71f3323931df456067d288acb83a2a81dc36df894ce83765c71b14463  web/src/pro/lib/scales.ts
 1b5a80568ce64ab7622c0dcc52675afe84976647cbf7311b773f5ac6f32feb53  web/src/pro/lib/types.ts
 90cba57e944bd725c33bfb68ebb123bf9ed8659b127fdaa2708d529fb80b0b6c  web/src/pro/pro.css
-02862a68a3135318c2105b1c496784a50a84853ee48e393f0745fa369cb62096  web/tests-brand/brand.test.mjs
+ba9ef3af1aebcd269aaab79603558edffea977628bdd14ddcd103fdfd4e1e21a  web/tests-brand/brand.test.mjs
 2b3978030ce6292be9cce8564a379463f4c3f351e35f708d886dd88efcc67cdb  web/tests-pro/data.test.mjs
 206662f7058303a060243de3f18f830acb507dba406ad4162cf93af7fb60f48f  web/tests-pro/math.test.mjs
 5c51df4c59f4510d8c7dadf07a5c32132228826a3b331da5e286207b4df7ef9c  web/tsconfig.json
