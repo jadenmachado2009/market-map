@@ -9,7 +9,7 @@ import Logo from "@/brand/Logo";
  * Fill these in to show them. Empty values are left out, and the page reads fine without them.
  */
 const AUTHOR_NAME = "Jaden Machado";
-const LINKEDIN_URL = ""; // e.g. "https://www.linkedin.com/in/..."
+const LINKEDIN_URL = "https://www.linkedin.com/in/jaden-machado/";
 const VIDEO_URL = ""; // a short walkthrough in your own voice, e.g. an unlisted YouTube link
 
 const TITLE = "About Market Map";
@@ -105,7 +105,7 @@ export default function About() {
             the wrong section of each filing being read, and the site now keeps whichever text source scores better.
           </p>
           <p>
-            Pro rebuilds itself every night from Yahoo Finance prices and SEC filings, and more than 70 automated tests
+            Pro rebuilds itself every night from Yahoo Finance prices and SEC filings, and more than 90 automated tests
             check the maths.
           </p>
         </section>
