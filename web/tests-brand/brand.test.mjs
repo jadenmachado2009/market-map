@@ -51,7 +51,7 @@ test("titles, previews and theme colour are wired into both routes", () => {
   assert.ok(home.includes("/brand/og-classic.png") && pro.includes("/brand/og-pro.png"));
   for (const p of [home, pro]) assert.match(p, /card: "summary_large_image"/);
   assert.match(layout, /themeColor: "#0e0e0e"/);
-  assert.match(layout, /metadataBase: new URL\("https:\/\/market-map-zeta\.vercel\.app"\)/);
+  assert.match(layout, /metadataBase: new URL\("https:\/\/stock-market-map\.vercel\.app"\)/);
   assert.ok(home.includes("<Logo ") && pro.includes("<Logo pro "));
   assert.ok(pro.includes("← Classic map") && home.includes("Try Pro →"));
 });
