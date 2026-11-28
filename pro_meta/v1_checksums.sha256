@@ -20,7 +20,7 @@ da013ff6bda052a87bf5be768dafb2a0ea09bc1900b98b294cc3c1b911ec2cbc  web/public/bra
 c1facb3f3eae569957fc45978ce65d144b3656a19827bf85e6e6f3293de4e79d  web/public/brand/mm-lockup.svg
 c365de0f188e8f33a5f2900d034071fcc9ee8667b2c008ccbae788513e4d9dbb  web/public/brand/og-classic.png
 e8f91897e1f9a511aabdfbc6249ca42146cc7079f263fc74b77795fd2d17ad81  web/public/brand/og-pro.png
-7f630bc86c502d679ac3b3d3927f7367401b066fedd7f33bab770c464cf1489d  web/src/app/about/page.tsx
+33c28e4144931898c34fc5a54fc0f9476c22ef72f307dd989d1e6c7c807aac1f  web/src/app/about/page.tsx
 c56a1932ba1b816d167f190ef7fe8ea1eccfdac9f685c536e16bddfe3834bbfc  web/src/app/favicon.ico
 8f196e5bd329b5ec549e0b6e405969af1c0d6d0f47e593f32f950c50dbf1c12d  web/src/app/globals.css
 687cc288132e702b24bc84f7eefe043ddde99509b7b8646f06f4d05432e19e08  web/src/app/layout.tsx
